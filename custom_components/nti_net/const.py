@@ -23,6 +23,24 @@ CONF_USERNAME: Final = "username"
 CONF_PASSWORD: Final = "password"
 CONF_API_URL: Final = "api_url"
 CONF_SCAN_INTERVAL: Final = "scan_interval"
+CONF_GAS_UNIT: Final = "gas_unit"
+CONF_GAS_KWH_PER_M3: Final = "gas_kwh_per_m3"
+
+#: The meter reads output energy in kWh.  ``m³`` is offered as a display choice
+#: because several utilities bill that way, but volume is not what the cloud
+#: stores, so it is always derived from the kWh figure.
+GAS_UNIT_KWH: Final = "kwh"
+GAS_UNIT_M3: Final = "m3"
+
+#: Energy content of natural gas, in kWh per cubic metre.
+#:
+#: 37.5 MJ/m³ ÷ 3.6 MJ/kWh ≈ 10.42.  This is a typical North American higher
+#: heating value; real bills vary by a few percent with the gas's composition
+#: and are quoted as a monthly conversion factor, so the user should copy the
+#: figure from their own bill.  Never treat it as exact.
+DEFAULT_GAS_KWH_PER_M3: Final = 10.42
+MIN_GAS_KWH_PER_M3: Final = 5.0
+MAX_GAS_KWH_PER_M3: Final = 20.0
 
 ATTR_TEMPERATURE: Final = "temperature"
 ATTR_UNTIL: Final = "until"

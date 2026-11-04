@@ -10,11 +10,20 @@ from __future__ import annotations
 import pytest
 from freezegun import freeze_time
 from homeassistant import config_entries, data_entry_flow
+from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.nti_net.api import NtiNetError
 from custom_components.nti_net.const import DhwMode
+from custom_components.nti_net.sensor import (
+    GAS_SENSOR_KEYS,
+    GAS_SENSORS,
+    PLANT_ATTRIBUTE_MAP,
+    PLANT_SENSORS,
+    NtiNetSensor,
+)
 from custom_components.nti_net.coordinator import (
     _month_to_date,
     _parse_consumption,
@@ -326,3 +335,65 @@ async def test_consumption_is_skipped_without_metering() -> None:
     coordinator.client = _Client()
     plant = NtiNetPlant(gateway_id="TEST", name="P")
     await coordinator._async_apply_consumption(plant)
+
+
+def test_gas_sensor_keys_match_the_descriptions() -> None:
+    """The set used for unit switching must cover every gas sensor."""
+    assert GAS_SENSOR_KEYS == {d.key for d in GAS_SENSORS}
+    assert len(GAS_SENSOR_KEYS) == 5
+    for key in GAS_SENSOR_KEYS:
+        assert key in PLANT_ATTRIBUTE_MAP
+
+
+@pytest.mark.parametrize("gas_unit", ["kwh", "m3"])
+def test_gas_sensor_unit_selection(gas_unit) -> None:
+    """kWh passes the value through; m³ divides by the energy content."""
+    plant_container = NtiNetPlant(gateway_id="TEST", name="P")
+    plant_container.gas_last_month = 2601.16
+
+    coordinator = _coordinator()
+    coordinator.data = {"TEST": plant_container}
+
+    description = next(d for d in GAS_SENSORS if d.key == "gas_last_month")
+    sensor = NtiNetSensor(
+        coordinator,
+        plant_container,
+        description,
+        gas_unit=gas_unit,
+        kwh_per_m3=10.42,
+    )
+
+    if gas_unit == "kwh":
+        assert sensor.native_value == 2601.16
+        assert sensor.native_unit_of_measurement == "kWh"
+        assert sensor.device_class is SensorDeviceClass.ENERGY
+    else:
+        assert sensor.native_value == 249.631  # 2601.16 / 10.42
+        assert sensor.native_unit_of_measurement == "m³"
+        assert sensor.device_class is SensorDeviceClass.GAS
+
+
+def test_non_gas_sensor_ignores_the_gas_unit() -> None:
+    """A temperature sensor must never be converted by the gas setting."""
+    plant_container = NtiNetPlant(gateway_id="TEST", name="P")
+    plant_container.outside_temp = 8.0
+    coordinator = _coordinator()
+    coordinator.data = {"TEST": plant_container}
+    description = next(d for d in PLANT_SENSORS if d.key == "outside_temperature")
+    sensor = NtiNetSensor(
+        coordinator, plant_container, description, gas_unit="m3", kwh_per_m3=10.42
+    )
+    assert sensor.native_value == 8.0
+    assert sensor.native_unit_of_measurement == UnitOfTemperature.CELSIUS
+
+
+def test_gas_conversion_of_missing_value_stays_none() -> None:
+    """Conversion must not turn a missing reading into zero."""
+    plant_container = NtiNetPlant(gateway_id="TEST", name="P")
+    coordinator = _coordinator()
+    coordinator.data = {"TEST": plant_container}
+    description = next(d for d in GAS_SENSORS if d.key == "gas_last_month")
+    sensor = NtiNetSensor(
+        coordinator, plant_container, description, gas_unit="m3", kwh_per_m3=10.42
+    )
+    assert sensor.native_value is None

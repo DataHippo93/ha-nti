@@ -19,6 +19,10 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
@@ -33,10 +37,17 @@ from .api import (
 )
 from .const import (
     CONF_API_URL,
+    CONF_GAS_KWH_PER_M3,
+    CONF_GAS_UNIT,
     CONF_SCAN_INTERVAL,
     DEFAULT_API_URL,
+    DEFAULT_GAS_KWH_PER_M3,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    GAS_UNIT_KWH,
+    GAS_UNIT_M3,
+    MAX_GAS_KWH_PER_M3,
+    MIN_GAS_KWH_PER_M3,
     MIN_SCAN_INTERVAL,
 )
 
@@ -56,7 +67,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
-def _scan_interval_schema(current: int) -> vol.Schema:
+def _options_schema(current: int, gas_unit: str, kwh_per_m3: float) -> vol.Schema:
     """Build the options schema, clamped to the minimum safe interval."""
     return vol.Schema(
         {
@@ -68,7 +79,32 @@ def _scan_interval_schema(current: int) -> vol.Schema:
                     unit_of_measurement="s",
                     mode=NumberSelectorMode.BOX,
                 )
-            )
+            ),
+            vol.Required(CONF_GAS_UNIT, default=gas_unit): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(
+                            value=GAS_UNIT_KWH, label="kWh (energy)"
+                        ),
+                        SelectOptionDict(
+                            value=GAS_UNIT_M3,
+                            label="m³ (derived from energy)",
+                        ),
+                    ],
+                    mode=SelectSelectorMode.LIST,
+                )
+            ),
+            vol.Required(
+                CONF_GAS_KWH_PER_M3, default=kwh_per_m3
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=MIN_GAS_KWH_PER_M3,
+                    max=MAX_GAS_KWH_PER_M3,
+                    step=0.01,
+                    unit_of_measurement="kWh/m³",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
         }
     )
 
@@ -209,9 +245,15 @@ class NtiNetOptionsFlow(OptionsFlow):
         current = self.config_entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
         )
+        gas_unit = self.config_entry.options.get(CONF_GAS_UNIT, GAS_UNIT_KWH)
+        kwh_per_m3 = self.config_entry.options.get(
+            CONF_GAS_KWH_PER_M3, DEFAULT_GAS_KWH_PER_M3
+        )
         if user_input is not None:
             return self.async_create_entry(data=user_input)
         return self.async_show_form(
             step_id="init",
-            data_schema=_scan_interval_schema(int(current)),
+            data_schema=_options_schema(
+                int(current), gas_unit, float(kwh_per_m3)
+            ),
         )

@@ -44,19 +44,44 @@ account advertises metering (`hasMetering`).
 
 ### Energy dashboard
 
-The gas sensors report **energy in kWh**, so add them to the energy dashboard as
-a *gas source*. Home Assistant's gas device class only accepts volume units, so
-these are `energy` sensors rather than `gas` ones; the dashboard accepts either
-as a gas source.
-
 Only **Gas consumption this month** is a running total, so it is the one to
 attach to the dashboard. The other four are per-period figures that legitimately
 fall from one period to the next, so they carry no state class and are meant for
 templates, cards and automations rather than long-term statistics.
 
-Set the gas price under **Settings → Dashboards → Energy → Gas consumption →
-Add cost** rather than deriving it from the integration: the cloud's price is a
-display preference, not a billed rate.
+The cloud stores **energy**, so the sensors report kWh by default. Several
+utilities bill gas by volume instead, so **Settings → Devices & services → NTI
+net → Configure** offers an **m³** display mode:
+
+* **kWh** (default) — `energy` device class, no conversion, honest to the wire
+  format.
+* **m³** — `gas` device class, derived as `kWh ÷ energy content`. Set the
+  energy content to the conversion factor printed on your own gas bill; the
+  `10.42 kWh/m³` default is a typical North American value and is only
+  approximate. Real factors move a few percent month to month with the gas's
+  composition.
+
+Because m³ is derived, a small error in the factor shifts every reading. The
+factor is never applied to the stored kWh values, only at display time, so
+changing it re-derives the volumes without refetching.
+
+#### Cost
+
+Add the price under **Settings → Dashboards → Energy → Gas consumption → Add
+cost**, and match it to the unit you chose above:
+
+| Unit | Rate for `$3.99/GJ` | How it was derived |
+| --- | --- | --- |
+| kWh | `0.01436` per kWh | `3.99 ÷ 277.778` |
+| m³ | `0.1497` per m³ | `3.99 ÷ 277.778 × 10.42` |
+
+Do not read the price from the integration: the cloud's `gasCost` and `elecCost`
+are display preferences, not your billed rate.
+
+Both figures are the **commodity** charge only. Delivery, distribution, the
+carbon levy and admin fees are separate, so the dashboard will understate a real
+bill — often by two to three times in Alberta. For a figure that matches your
+invoice, divide your average total bill by that month's consumption instead.
 
 Consumption is refreshed hourly rather than on every poll, because the report
 route is heavier and the figures only change once a day. The running total

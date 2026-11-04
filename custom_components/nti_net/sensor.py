@@ -16,10 +16,17 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy, UnitOfTemperature
+from homeassistant.const import UnitOfEnergy, UnitOfTemperature, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .const import (
+    CONF_GAS_KWH_PER_M3,
+    CONF_GAS_UNIT,
+    DEFAULT_GAS_KWH_PER_M3,
+    GAS_UNIT_KWH,
+    GAS_UNIT_M3,
+)
 from .coordinator import NtiNetCoordinator, NtiNetPlant
 from .entity import NtiNetEntity
 
@@ -110,6 +117,11 @@ GAS_SENSORS: tuple[SensorEntityDescription, ...] = (
     ),
 )
 
+#: The sensors whose unit follows the account's gas unit choice.
+GAS_SENSOR_KEYS: frozenset[str] = frozenset(
+    description.key for description in GAS_SENSORS
+)
+
 #: Sensors that only make sense on an appliance with a hot water cylinder.
 DHW_SENSOR_KEYS: frozenset[str] = frozenset(
     {"dhw_temperature", "dhw_reduced_temperature"}
@@ -123,6 +135,10 @@ async def async_setup_entry(
 ) -> None:
     """Add plant-level sensors."""
     coordinator: NtiNetCoordinator = entry.runtime_data
+    gas_unit = entry.options.get(CONF_GAS_UNIT, GAS_UNIT_KWH)
+    kwh_per_m3 = float(
+        entry.options.get(CONF_GAS_KWH_PER_M3, DEFAULT_GAS_KWH_PER_M3)
+    )
     entities: list[NtiNetSensor] = []
     for plant in coordinator.data.values():
         for description in PLANT_SENSORS:
@@ -131,7 +147,15 @@ async def async_setup_entry(
             entities.append(NtiNetSensor(coordinator, plant, description))
         if plant.has_metering:
             for description in GAS_SENSORS:
-                entities.append(NtiNetSensor(coordinator, plant, description))
+                entities.append(
+                    NtiNetSensor(
+                        coordinator,
+                        plant,
+                        description,
+                        gas_unit=gas_unit,
+                        kwh_per_m3=kwh_per_m3,
+                    )
+                )
     async_add_entities(entities)
 
 
@@ -143,16 +167,29 @@ class NtiNetSensor(NtiNetEntity, SensorEntity):
         coordinator: NtiNetCoordinator,
         plant: NtiNetPlant,
         description: SensorEntityDescription,
+        gas_unit: str = GAS_UNIT_KWH,
+        kwh_per_m3: float = DEFAULT_GAS_KWH_PER_M3,
     ) -> None:
         """Initialise the sensor."""
         super().__init__(coordinator, plant, description.key)
         self.entity_description = description
         self._attribute = PLANT_ATTRIBUTE_MAP[description.key]
+        self._factor = 1.0
+        if description.key in GAS_SENSOR_KEYS and gas_unit == GAS_UNIT_M3:
+            # The cloud reports energy; a volume reading is always derived.
+            self._factor = 1.0 / kwh_per_m3 if kwh_per_m3 else 1.0
+            self._attr_device_class = SensorDeviceClass.GAS
+            self._attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
 
     @property
     def native_value(self) -> float | None:
-        """Return the current reading."""
+        """Return the current reading, in the configured gas unit."""
         plant = self.plant
         if plant is None:
             return None
-        return getattr(plant, self._attribute, None)
+        value = getattr(plant, self._attribute, None)
+        if value is None or self._factor == 1.0:
+            return value
+        # Round back to the precision the cloud reports, so the derived volume
+        # does not imply more accuracy than the source has.
+        return round(value * self._factor, 3)

@@ -34,9 +34,14 @@
     "step": {
       "init": {
         "title": "NTI net options",
-        "description": "The cloud throttles per account, so the poll interval cannot go below 180 seconds.",
+        "description": "The cloud throttles per account, so the poll interval cannot go below 180 seconds. Gas is stored by the cloud as energy; choosing m³ derives it from that using the energy content below.",
         "data": {
-          "scan_interval": "Poll interval"
+          "scan_interval": "Poll interval",
+          "gas_unit": "Gas unit",
+          "gas_kwh_per_m3": "Energy content of your gas"
+        },
+        "data_description": {
+          "gas_kwh_per_m3": "kWh per cubic metre. Copy the conversion factor from your gas bill; the 10.42 default is a typical North American value and is only approximate."
         }
       }
     }

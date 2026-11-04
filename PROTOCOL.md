@@ -396,6 +396,30 @@ client enum) invites dividing by 3.6 or 277.78. That would be wrong twice over �
 once because the series is already kWh, and once because the enum index is a
 display hint, not a transform the integration is meant to reverse.
 
+### Deriving a volume reading
+
+The wire only ever carries energy, so an m³ figure is a client-side derivation:
+
+```
+m³ = kWh / energy_content(kWh per m³)
+```
+
+Energy content is a property of the delivered gas, not of this protocol, so it
+is **not** read from the cloud and is not a constant. Typical North American
+natural gas is ~37.5 MJ/m³ ≈ 10.42 kWh/m³, but a bill's factor moves a few
+percent month to month with composition. The integration therefore defaults to
+10.42 and lets the user override it in the options flow; changing it re-derives
+the displayed volumes without refetching, because only the kWh values are
+stored.
+
+For reference, 1 GJ ≈ 26.66 m³ at 10.42 kWh/m³. A utility quoting `$3.99/GJ`
+is therefore quoting about `$0.1497/m³`, and the equivalent energy price is
+`$0.01436/kWh`.
+
+Do not confuse this with `gasEnergyUnit`: that field would say GigaJoule for a
+Canadian account, and it is a *display* preference for the app. Converting the
+series by it to reach m³ would give a number three orders of magnitude off.
+
 ### `GET remote/reports/{gw}/energyAccount` (verified)
 
 ```json
