@@ -1,0 +1,70 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "NTI net account",
+        "description": "Sign in with the e-mail and password you use in the NTI net app.",
+        "data": {
+          "username": "E-mail",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid e-mail or password.",
+      "cannot_connect": "Cannot reach the NTI net cloud.",
+      "rate_limited": "NTI net is throttling this account. Wait a few minutes and try again.",
+      "no_plants": "This account has no appliances registered.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This account is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "NTI net options",
+        "description": "The cloud throttles per account, so the poll interval cannot go below 180 seconds.",
+        "data": {
+          "scan_interval": "Poll interval"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "flame": {
+        "name": "Burner flame"
+      },
+      "heating_pump": {
+        "name": "Heating pump"
+      },
+      "online": {
+        "name": "Online"
+      }
+    },
+    "sensor": {
+      "outside_temperature": {
+        "name": "Outside temperature"
+      },
+      "dhw_temperature": {
+        "name": "Hot water temperature"
+      }
+    },
+    "select": {
+      "plant_mode": {
+        "name": "Operating mode",
+        "state": {
+          "off": "Off",
+          "summer": "Summer",
+          "winter": "Winter",
+          "heating_only": "Heating only",
+          "cooling": "Cooling",
+          "cooling_only": "Cooling only",
+          "holiday": "Holiday"
+        }
+      }
+    }
+  }
+}
