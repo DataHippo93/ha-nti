@@ -24,6 +24,21 @@ CONF_PASSWORD: Final = "password"
 CONF_API_URL: Final = "api_url"
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 
+ATTR_TEMPERATURE: Final = "temperature"
+ATTR_UNTIL: Final = "until"
+
+SERVICE_SET_OVERRIDE: Final = "set_zone_override"
+SERVICE_CLEAR_OVERRIDE: Final = "clear_zone_override"
+SERVICE_SET_HOLIDAY: Final = "set_holiday"
+
+#: How long the gateway takes to reflect a write in the aggregated read.
+#: Measured against a live appliance: an immediate re-read still returns the old
+#: value, so a short settle delay is needed before the confirming read.
+WRITE_SETTLE_SECONDS: Final = 5
+
+#: Horizon used when a caller sets an override without an expiry.
+DEFAULT_OVERRIDE_HOURS: Final = 2
+
 DEFAULT_API_URL: Final = "https://www.nti.remotethermo.com/api/v2/"
 
 #: Cloud refuses fast polling; the vendor app is throttled per account.

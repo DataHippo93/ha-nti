@@ -48,10 +48,6 @@ class NtiNetWaterHeater(NtiNetEntity, WaterHeaterEntity):
 
     _attr_name = "Hot water"
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
-    _attr_supported_features = (
-        WaterHeaterEntityFeature.TARGET_TEMPERATURE
-        | WaterHeaterEntityFeature.OPERATION_MODE
-    )
 
     def __init__(self, coordinator: NtiNetCoordinator, plant: NtiNetPlant) -> None:
         """Initialise the water heater entity."""
@@ -88,9 +84,26 @@ class NtiNetWaterHeater(NtiNetEntity, WaterHeaterEntity):
         return plant.dhw_step if plant else 1.0
 
     @property
+    def supported_features(self) -> WaterHeaterEntityFeature:
+        """Return the features this cylinder accepts.
+
+        The cloud can report ``dhwModeNotChangeable``; when it does, offering an
+        operation-mode selector would be a control that cannot work. Home
+        Assistant raises ``operation_list_not_defined`` if the feature is
+        advertised without a list, so both must move together.
+        """
+        features = WaterHeaterEntityFeature.TARGET_TEMPERATURE
+        plant = self.plant
+        if plant is not None and plant.dhw_mode_changeable and self.operation_list:
+            features |= WaterHeaterEntityFeature.OPERATION_MODE
+        return features
+
+    @property
     def operation_list(self) -> list[str]:
         """Return the DHW modes this appliance advertises."""
         plant = self.plant
+        if plant is not None and not plant.dhw_mode_changeable:
+            return []
         allowed = plant.allowed_dhw_modes if plant else []
         values = allowed or [
             DhwMode.DISABLED,

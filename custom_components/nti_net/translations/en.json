@@ -8,6 +8,13 @@
           "username": "E-mail",
           "password": "Password"
         }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate NTI net",
+        "description": "NTI net no longer accepts the stored password for {username}. Enter the current one.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
@@ -18,7 +25,9 @@
       "unknown": "Unexpected error."
     },
     "abort": {
-      "already_configured": "This account is already configured."
+      "already_configured": "This account is already configured.",
+      "reauth_successful": "Your NTI net password was updated.",
+      "reauth_failed": "The account is no longer configured."
     }
   },
   "options": {
@@ -28,6 +37,66 @@
         "description": "The cloud throttles per account, so the poll interval cannot go below 180 seconds.",
         "data": {
           "scan_interval": "Poll interval"
+        }
+      }
+    }
+  },
+  "services": {
+    "set_zone_override": {
+      "name": "Set zone override",
+      "description": "Hold a zone at a fixed temperature until a given time, ignoring its schedule.",
+      "fields": {
+        "entity_id": {
+          "name": "Entity",
+          "description": "Any entity of the gateway the zone belongs to."
+        },
+        "zone": {
+          "name": "Zone",
+          "description": "Zone number as shown in the app."
+        },
+        "temperature": {
+          "name": "Temperature",
+          "description": "Temperature to hold, in Celsius."
+        },
+        "until": {
+          "name": "Until",
+          "description": "When the override expires. Defaults to the override already stored on the appliance."
+        },
+        "gateway": {
+          "name": "Gateway",
+          "description": "Gateway id, as an alternative to targeting an entity."
+        }
+      }
+    },
+    "clear_zone_override": {
+      "name": "Clear zone override",
+      "description": "Cancel a zone override and return the zone to its schedule.",
+      "fields": {
+        "entity_id": {
+          "name": "Entity",
+          "description": "Any entity of the gateway the zone belongs to."
+        },
+        "zone": {
+          "name": "Zone",
+          "description": "Zone number as shown in the app."
+        },
+        "gateway": {
+          "name": "Gateway",
+          "description": "Gateway id, as an alternative to targeting an entity."
+        }
+      }
+    },
+    "set_holiday": {
+      "name": "Set holiday mode",
+      "description": "Enable holiday mode until a given time, or clear it by omitting the time. Holiday state cannot be read back from the cloud.",
+      "fields": {
+        "until": {
+          "name": "Until",
+          "description": "When holiday mode ends. Omit to clear it."
+        },
+        "gateway": {
+          "name": "Gateway",
+          "description": "Gateway id. Omit to apply to every gateway on the account."
         }
       }
     }
@@ -42,6 +111,9 @@
       },
       "online": {
         "name": "Online"
+      },
+      "zone_override": {
+        "name": "Override"
       }
     },
     "sensor": {
@@ -50,6 +122,9 @@
       },
       "dhw_temperature": {
         "name": "Hot water temperature"
+      },
+      "dhw_reduced_temperature": {
+        "name": "Hot water economy temperature"
       }
     },
     "select": {

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Mapping
 
 import voluptuous as vol
 from homeassistant.config_entries import (
@@ -19,6 +19,9 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
 )
 
 from .api import (
@@ -29,6 +32,7 @@ from .api import (
     NtiNetRateLimitError,
 )
 from .const import (
+    CONF_API_URL,
     CONF_SCAN_INTERVAL,
     DEFAULT_API_URL,
     DEFAULT_SCAN_INTERVAL,
@@ -40,8 +44,14 @@ _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_USERNAME): str,
-        vol.Required(CONF_PASSWORD): str,
+        vol.Required(CONF_USERNAME): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.EMAIL, autocomplete="username")
+        ),
+        vol.Required(CONF_PASSWORD): TextSelector(
+            TextSelectorConfig(
+                type=TextSelectorType.PASSWORD, autocomplete="current-password"
+            )
+        ),
     }
 )
 
@@ -119,6 +129,70 @@ class NtiNetConfigFlow(ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(config_entry: ConfigEntry) -> NtiNetOptionsFlow:
         """Return the options flow."""
         return NtiNetOptionsFlow()
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Start re-authentication after the stored password stopped working.
+
+        This must live on the same handler class as ``async_step_user``: Home
+        Assistant registers exactly one config-flow handler per domain, so a
+        second ``ConfigFlow`` subclass for the same domain silently replaces the
+        first and the setup form stops appearing.
+        """
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect and verify the new password."""
+        errors: dict[str, str] = {}
+        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        if entry is None:
+            return self.async_abort(reason="reauth_failed")
+
+        if user_input is not None:
+            session = async_get_clientsession(self.hass)
+            client = NtiNetApiClient(
+                session=session,
+                username=entry.data[CONF_USERNAME],
+                password=user_input[CONF_PASSWORD],
+                api_url=entry.data.get(CONF_API_URL, DEFAULT_API_URL),
+            )
+            try:
+                await client.async_login()
+            except NtiNetAuthError:
+                errors["base"] = "invalid_auth"
+            except NtiNetRateLimitError:
+                errors["base"] = "rate_limited"
+            except NtiNetConnectionError:
+                errors["base"] = "cannot_connect"
+            except NtiNetError:
+                _LOGGER.exception("Unexpected error during NTI net reauth")
+                errors["base"] = "unknown"
+            else:
+                self.hass.config_entries.async_update_entry(
+                    entry,
+                    data={**entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]},
+                )
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_abort(reason="reauth_successful")
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_PASSWORD): TextSelector(
+                        TextSelectorConfig(
+                            type=TextSelectorType.PASSWORD,
+                            autocomplete="current-password",
+                        )
+                    )
+                }
+            ),
+            description_placeholders={CONF_USERNAME: entry.data[CONF_USERNAME]},
+            errors=errors,
+        )
 
 
 class NtiNetOptionsFlow(OptionsFlow):

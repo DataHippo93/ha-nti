@@ -89,6 +89,15 @@ class NtiNetZone:
         return self.desired_temp if self.desired_temp is not None else self.comfort_temp
 
     @property
+    def override_active(self) -> bool:
+        """Return whether a manual override is in force right now.
+
+        The cloud reports a disabled override with an expiry of
+        ``1970-01-01T00:00:00``, so the flag is what counts, not the timestamp.
+        """
+        return bool(self.deroga_enabled)
+
+    @property
     def min_temp(self) -> float:
         """Return the lowest selectable setpoint."""
         return self.comfort_min
@@ -117,6 +126,7 @@ class NtiNetPlant:
     dhw_temp: float | None = None
     dhw_setpoint: float | None = None
     dhw_reduced_temp: float | None = None
+    dhw_mode_changeable: bool = True
     dhw_min: float = 40.0
     dhw_max: float = 65.0
     dhw_step: float = 1.0
@@ -137,6 +147,11 @@ class NtiNetPlant:
         if self.features.get("dhwHidden") is True:
             return False
         return bool(self.raw.get("dhwBoiler")) or self.dhw_mode is not None
+
+    @property
+    def override_active(self) -> bool:
+        """Return whether any zone has a manual override in force."""
+        return any(zone.override_active for zone in self.zones.values())
 
 
 class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
@@ -169,7 +184,12 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
             raise UpdateFailed(
                 f"NTI net is throttling this account; retry in {err.retry_after}s"
             ) from err
-        except (NtiNetAuthError, NtiNetError) as err:
+        except NtiNetAuthError as err:
+            # The stored password is no longer accepted; ask the user for a new
+            # one rather than polling forever with credentials that cannot work.
+            self.config_entry.async_start_reauth(self.hass)
+            raise UpdateFailed(f"NTI net rejected the stored credentials: {err}") from err
+        except NtiNetError as err:
             raise UpdateFailed(f"Cannot read NTI net account: {err}") from err
 
         result: dict[str, NtiNetPlant] = {}
@@ -246,6 +266,15 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
         dhw_mode = _wrapped(data.get("dMod"))
         plant.dhw_mode = _as_int(dhw_mode.get("value"))
         plant.allowed_dhw_modes = _as_int_list(dhw_mode.get("allowedOptions"))
+        # The cloud says whether the mode may be changed at all; when it says
+        # no, the water heater must not offer a mode selector. Some firmware
+        # reports the inverse flag instead, so honour whichever is present.
+        not_changeable = _as_bool(data.get("dhwModeNotChangeable"))
+        changeable = _as_bool(plant.features.get("dhwModeChangeable"))
+        if not_changeable is not None:
+            plant.dhw_mode_changeable = not not_changeable
+        elif changeable is not None:
+            plant.dhw_mode_changeable = changeable
 
         comfort = _wrapped(data.get("dComf"))
         plant.dhw_setpoint = _as_float(comfort.get("value"))
@@ -334,6 +363,9 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
             zone.desired_temp = _as_float(raw_zone.get("desiredTemp"))
             zone.heat_request = _as_bool(raw_zone.get("chRequest"))
             zone.room_temp = _as_float(raw_zone.get("roomTemp"))
+            # Store the zone before returning; an early return here used to
+            # discard every BSB zone that had just been parsed.
+            plant.zones[number] = zone
             return
 
         zone.comfort_min = _as_float(comfort.get("min"), 10.0) or 10.0

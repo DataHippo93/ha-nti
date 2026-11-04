@@ -42,15 +42,24 @@ PLANT_SENSORS: tuple[SensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         state_class=SensorStateClass.MEASUREMENT,
     ),
+    SensorEntityDescription(
+        key="dhw_reduced_temperature",
+        translation_key="dhw_reduced_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+    ),
 )
 
 PLANT_ATTRIBUTE_MAP: dict[str, str] = {
     "outside_temperature": "outside_temp",
     "dhw_temperature": "dhw_temp",
+    "dhw_reduced_temperature": "dhw_reduced_temp",
 }
 
 #: Sensors that only make sense on an appliance with a hot water cylinder.
-DHW_SENSOR_KEYS: frozenset[str] = frozenset({"dhw_temperature"})
+DHW_SENSOR_KEYS: frozenset[str] = frozenset(
+    {"dhw_temperature", "dhw_reduced_temperature"}
+)
 
 
 async def async_setup_entry(

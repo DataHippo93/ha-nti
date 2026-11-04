@@ -385,6 +385,33 @@ class NtiNetApiClient:
         """
         await self._write(f"remote/zones/{gateway_id}/{zone}/name", name, None)
 
+    async def async_set_zone_override(
+        self,
+        gateway_id: str,
+        zone: int,
+        *,
+        temperature: float,
+        until: str | None,
+        enabled: bool = True,
+        old: dict[str, Any] | None = None,
+    ) -> None:
+        """Set or clear a zone's manual override ("deroga").
+
+        The payload is the ``DerogaDto`` shape recovered from the shipped app:
+        ``{"temp": float, "exp": ISO-8601 string, "enab": bool}``.  Clearing an
+        override means sending ``enab: false`` -- there is no DELETE.
+
+        Verified live: ``POST .../deroga`` answers ``{"success": true}``.  Note
+        that the state is *not* readable through any GET route, so this client
+        cannot confirm a write by re-reading it; the caller re-reads the zone
+        from ``plantData`` instead, where it appears as ``zones.N.der``.
+        """
+        await self._write(
+            f"remote/zones/{gateway_id}/{zone}/deroga",
+            {"temp": temperature, "exp": until, "enab": enabled},
+            old,
+        )
+
     async def _write(
         self,
         path: str,

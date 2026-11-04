@@ -26,6 +26,8 @@ For each gateway (appliance) on the account:
 | Burner flame | `binary_sensor` | |
 | Heating pump | `binary_sensor` | |
 | Online | `binary_sensor` | Gateway connectivity |
+| Zone override | `binary_sensor` | Override in force, with its temperature and expiry |
+| Hot water economy temperature | `sensor` | The cylinder's reduced setpoint |
 
 Entities are grouped under one device per gateway, showing the model, firmware
 version and serial number.
@@ -91,6 +93,49 @@ Reads always pin the metric unit system (`umsys=si`), so every temperature in
 Home Assistant is Celsius regardless of your account's locale. Unit conversion
 to Fahrenheit is left to Home Assistant's own unit system support.
 
+## Services
+
+Two actions cover what the cloud cannot express as an entity.
+
+**`nti_net.set_zone_override`** holds one zone at a fixed temperature until a
+given time, ignoring its schedule — the app's "manual override" (the vendor
+calls it *deroga*).
+
+```yaml
+action: nti_net.set_zone_override
+target:
+  entity_id: climate.boiler_zone_1
+data:
+  zone: 1
+  temperature: 21.5
+  until: "2026-11-05T22:00:00"
+```
+
+**`nti_net.clear_zone_override`** cancels it again:
+
+```yaml
+action: nti_net.clear_zone_override
+target:
+  entity_id: climate.boiler_zone_1
+data:
+  zone: 1
+```
+
+While an override is active, a `<zone> override` binary sensor turns on and
+reports the held temperature and expiry as attributes.
+
+**`nti_net.set_holiday`** turns holiday mode on until a timestamp, or clears it
+when `until` is omitted:
+
+```yaml
+action: nti_net.set_holiday
+data:
+  until: "2026-11-12T18:00:00"
+```
+
+Holiday state **cannot be read back** — no read route exposes it — so this is a
+write-only action with no matching entity.
+
 ## Known limitations
 
 * This is a cloud integration. If the vendor's service is down, the entities go
@@ -100,7 +145,10 @@ to Fahrenheit is left to Home Assistant's own unit system support.
   the next poll re-syncs.
 * Some routes exist only for other appliance families (BSB controllers, heat
   pumps, Velis water heaters). They are documented but untested here.
-* Time programs, holiday scheduling and reports are not exposed yet.
+* Time programs and consumption reports are not exposed. The cloud's
+  `energyAccount` route returns monthly buckets with an ambiguous unit, which is
+  not enough for Home Assistant's energy dashboard.
+* Holiday mode is write-only: the cloud applies it but never reports it back.
 
 ## Removing
 
