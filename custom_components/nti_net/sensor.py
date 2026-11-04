@@ -16,7 +16,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import UnitOfEnergy, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -54,7 +54,61 @@ PLANT_ATTRIBUTE_MAP: dict[str, str] = {
     "outside_temperature": "outside_temp",
     "dhw_temperature": "dhw_temp",
     "dhw_reduced_temperature": "dhw_reduced_temp",
+    "gas_consumption": "gas_this_month",
+    "gas_consumption_yesterday": "gas_yesterday",
+    "gas_last_month": "gas_last_month",
+    "gas_heating_last_month": "gas_heating_last_month",
+    "gas_dhw_last_month": "gas_dhw_last_month",
 }
+
+#: Gas sensors, created only on an appliance that advertises metering.
+#:
+#: The cloud reports consumption in kilowatt hours (the route is literally
+#: ``consKwhSequences`` in the shipped app), so the device class is ``energy``
+#: with a kWh unit rather than ``gas`` -- Home Assistant's gas device class only
+#: accepts volume units.  Its energy dashboard accepts an ``energy`` sensor as a
+#: gas source, so this still feeds the gas view.
+GAS_SENSORS: tuple[SensorEntityDescription, ...] = (
+    SensorEntityDescription(
+        key="gas_consumption",
+        translation_key="gas_consumption",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        # Month to date: it climbs while the month runs and drops back to zero
+        # on the first, which is exactly the reset Home Assistant's
+        # `total_increasing` handling is designed for.
+        state_class=SensorStateClass.TOTAL_INCREASING,
+    ),
+    # The rest are per-period totals: they go up and down from one period to
+    # the next, so they are not meters.  Home Assistant's `energy` device class
+    # only permits `total`/`total_increasing`, and claiming either would make
+    # the statistics engine read a drop as a meter reset.  They therefore carry
+    # no state class and are not offered as a dashboard source.
+    SensorEntityDescription(
+        key="gas_consumption_yesterday",
+        translation_key="gas_consumption_yesterday",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+    ),
+    SensorEntityDescription(
+        key="gas_last_month",
+        translation_key="gas_last_month",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+    ),
+    SensorEntityDescription(
+        key="gas_heating_last_month",
+        translation_key="gas_heating_last_month",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+    ),
+    SensorEntityDescription(
+        key="gas_dhw_last_month",
+        translation_key="gas_dhw_last_month",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+    ),
+)
 
 #: Sensors that only make sense on an appliance with a hot water cylinder.
 DHW_SENSOR_KEYS: frozenset[str] = frozenset(
@@ -75,6 +129,9 @@ async def async_setup_entry(
             if description.key in DHW_SENSOR_KEYS and not plant.has_dhw:
                 continue
             entities.append(NtiNetSensor(coordinator, plant, description))
+        if plant.has_metering:
+            for description in GAS_SENSORS:
+                entities.append(NtiNetSensor(coordinator, plant, description))
     async_add_entities(entities)
 
 

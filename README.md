@@ -28,13 +28,40 @@ For each gateway (appliance) on the account:
 | Online | `binary_sensor` | Gateway connectivity |
 | Zone override | `binary_sensor` | Override in force, with its temperature and expiry |
 | Hot water economy temperature | `sensor` | The cylinder's reduced setpoint |
+| Gas consumption this month | `sensor` | Month to date, kWh; the one to add to the energy dashboard |
+| Gas consumption yesterday | `sensor` | The last complete day, kWh |
+| Gas consumption last month | `sensor` | Last completed calendar month, kWh |
+| Gas heating last month | `sensor` | Space heating share of last month, kWh |
+| Gas hot water last month | `sensor` | DHW share of last month, kWh |
 
 Entities are grouped under one device per gateway, showing the model, firmware
 version and serial number.
 
 Only what the appliance actually reports is created. A gateway with no cylinder
-gets no water heater, a zone without a room probe shows no room temperature, and
-hidden virtual zones are skipped.
+gets no water heater, a zone without a room probe shows no room temperature,
+and hidden virtual zones are skipped. The gas sensors appear only when the
+account advertises metering (`hasMetering`).
+
+### Energy dashboard
+
+The gas sensors report **energy in kWh**, so add them to the energy dashboard as
+a *gas source*. Home Assistant's gas device class only accepts volume units, so
+these are `energy` sensors rather than `gas` ones; the dashboard accepts either
+as a gas source.
+
+Only **Gas consumption this month** is a running total, so it is the one to
+attach to the dashboard. The other four are per-period figures that legitimately
+fall from one period to the next, so they carry no state class and are meant for
+templates, cards and automations rather than long-term statistics.
+
+Set the gas price under **Settings → Dashboards → Energy → Gas consumption →
+Add cost** rather than deriving it from the integration: the cloud's price is a
+display preference, not a billed rate.
+
+Consumption is refreshed hourly rather than on every poll, because the report
+route is heavier and the figures only change once a day. The running total
+returns to zero on the first of the month, which Home Assistant's
+`total_increasing` handling accounts for.
 
 ## Icon
 
@@ -145,9 +172,10 @@ write-only action with no matching entity.
   the next poll re-syncs.
 * Some routes exist only for other appliance families (BSB controllers, heat
   pumps, Velis water heaters). They are documented but untested here.
-* Time programs and consumption reports are not exposed. The cloud's
-  `energyAccount` route returns monthly buckets with an ambiguous unit, which is
-  not enough for Home Assistant's energy dashboard.
+* Time programs are not exposed.
+* Only **gas** consumption is exposed. The same report also carries electricity
+  members, but a boiler gateway reports zero for them, so a sensor would sit at
+  `0` forever.
 * Holiday mode is write-only: the cloud applies it but never reports it back.
 
 ## Removing

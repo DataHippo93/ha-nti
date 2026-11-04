@@ -9,5 +9,5 @@
   "issue_tracker": "https://github.com/asxzy/ha-nti/issues",
   "loggers": ["custom_components.nti_net"],
   "requirements": [],
-  "version": "0.1.2"
+  "version": "0.1.3"
 }

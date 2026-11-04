@@ -295,6 +295,31 @@ class NtiNetApiClient:
         )
         return _as_dict(data)
 
+    async def async_get_consumption_sequences(
+        self, gateway_id: str, usages: tuple[str, ...] = ("Ch", "Dhw")
+    ) -> list[dict[str, Any]]:
+        """Return the metered consumption series for one gateway.
+
+        The payload is a list of ``{"k": ..., "p": ..., "v": [...]}`` blocks:
+        ``k`` selects the usage and ``p`` the bucket size, and ``v`` is the
+        series itself.  Both families must be asked for together because the
+        route only accepts the family names, not the per-appliance members.
+
+        The values are kilowatt hours.  This is not a guess: the route is
+        ``consKwhSequences`` in the shipped app, and the numbers agree with the
+        independently computed ``energyAccount`` monthly totals to within
+        rounding.
+
+        This route answers HTTP 500 for a gateway that does not meter, and for
+        some members even on one that does, so callers must tolerate failure.
+        """
+        data = await self._raw_request(
+            "GET",
+            f"remote/reports/{gateway_id}/consSequencesApi8",
+            params={"usages": ",".join(usages)},
+        )
+        return _as_list(data)
+
     async def async_get_bsb_plant_data(self, gateway_id: str) -> dict[str, Any]:
         """Return the BSB-family view, if this gateway speaks BSB."""
         data = await self._raw_request(

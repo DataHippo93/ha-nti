@@ -31,6 +31,25 @@ SERVICE_SET_OVERRIDE: Final = "set_zone_override"
 SERVICE_CLEAR_OVERRIDE: Final = "clear_zone_override"
 SERVICE_SET_HOLIDAY: Final = "set_holiday"
 
+#: ``consSequencesApi8`` selects a series with these two ids:
+#:
+#: * ``k`` -- which usage the series is for.  The route only accepts the
+#:   family filters ``Ch`` and ``Dhw``; the per-appliance members are then
+#:   distinguished by ``k``.  ``Ch`` answers ``1`` (space heating total),
+#:   ``7`` (space heating gas) and ``20`` (space heating electricity);
+#:   ``Dhw`` answers ``2`` (DHW total), ``10`` (DHW gas) and ``21`` (DHW
+#:   electricity).  ``ChBoilerGas`` and the heat-pump members answer HTTP 500
+#:   on a boiler gateway, so the family filters are the way to ask.
+#: * ``p`` -- the bucket size of the series: 1 = last 24 hours, 2 = last 7
+#:   days, 3 = daily, 4 = monthly.
+#:
+#: The route is named ``consKwhSequences`` in the shipped binary, so the values
+#: are **kWh** regardless of the account's display unit.
+GAS_USAGE_HEATING: Final = 7
+GAS_USAGE_DHW: Final = 10
+SEQUENCE_PERIOD_DAILY: Final = 3
+SEQUENCE_PERIOD_MONTHLY: Final = 4
+
 #: How long the gateway takes to reflect a write in the aggregated read.
 #: Measured against a live appliance: an immediate re-read still returns the old
 #: value, so a short settle delay is needed before the confirming read.

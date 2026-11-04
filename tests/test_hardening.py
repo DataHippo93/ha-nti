@@ -101,3 +101,70 @@ async def test_diagnostics_contains_no_pii(hass: HomeAssistant) -> None:
         assert plant["gateway_id"] == "**REDACTED**"
         assert plant["serial"] == "**REDACTED**"
     assert diag["entry"]["data"]["password"] == "**REDACTED**"
+
+
+async def test_gas_sensors_are_live(hass: HomeAssistant) -> None:
+    """The gas sensors must be created and carry real values.
+
+    The numbers are cross-checked against the cloud's own monthly breakdown,
+    which is a separate code path (``energyAccount``), so a unit mix-up would
+    show up as a factor of 3.6 or 10.
+    """
+    usr, pwd = load_credentials()
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"username": usr, "password": pwd},
+        unique_id=usr.lower(),
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = entry.runtime_data
+    plant = next(iter(coordinator.data.values()))
+    if not plant.has_metering:
+        import pytest
+
+        pytest.skip("this gateway does not advertise metering")
+
+    states = {
+        state.entity_id: state
+        for state in hass.states.async_all("sensor")
+        if state.entity_id.startswith("sensor.")
+    }
+    gas = {
+        entity_id: state
+        for entity_id, state in states.items()
+        if "gas" in entity_id
+    }
+    print("\ngas sensors:", {k: v.state for k, v in gas.items()})
+    assert len(gas) >= 5, gas
+
+    for state in gas.values():
+        assert state.state not in ("unknown", "unavailable"), state.entity_id
+        assert state.attributes["unit_of_measurement"] == "kWh"
+        assert state.attributes["device_class"] == "energy"
+        # Home Assistant's energy device class only allows total/total_increasing,
+        # so anything else here would log an "impossible state class" warning.
+        assert state.attributes.get("state_class") in (
+            None,
+            "total",
+            "total_increasing",
+        ), state.entity_id
+
+    month_total = states[
+        next(e for e in gas if e.endswith("_gas_consumption_this_month"))
+    ]
+    assert month_total.attributes["state_class"] == "total_increasing"
+    # Only the running month-to-date total may be a meter; the rest are
+    # per-period figures that legitimately go down.
+    for entity_id, state in gas.items():
+        if entity_id == month_total.entity_id:
+            continue
+        assert state.attributes.get("state_class") is None, entity_id
+    # Month to date cannot exceed the total of the last whole month by much.
+    last_month = next(
+        float(s.state) for e, s in gas.items() if e.endswith("_gas_consumption_last_month")
+    )
+    print("\nthis month:", month_total.state, "| last month:", last_month)
+    assert float(month_total.state) < last_month * 3

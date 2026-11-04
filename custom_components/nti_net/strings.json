@@ -125,6 +125,21 @@
       },
       "dhw_reduced_temperature": {
         "name": "Hot water economy temperature"
+      },
+      "gas_consumption": {
+        "name": "Gas consumption this month"
+      },
+      "gas_consumption_yesterday": {
+        "name": "Gas consumption yesterday"
+      },
+      "gas_last_month": {
+        "name": "Gas consumption last month"
+      },
+      "gas_heating_last_month": {
+        "name": "Gas heating last month"
+      },
+      "gas_dhw_last_month": {
+        "name": "Gas hot water last month"
       }
     },
     "select": {

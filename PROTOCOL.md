@@ -130,6 +130,9 @@ number.
 | `GET remote/plantData/{gw}?umsys=si` | **The main aggregated read** |
 | `GET remote/zones/{gw}/{z}?umsys=si` | One zone, same shape as embedded in `plantData` |
 | `POST remote/dataItems/{gw}/get?umsys=si` | Generic named-item read |
+| `POST remote/plants/{gw}/getConsumptionsSettings` | Energy display preferences |
+| `GET remote/reports/{gw}/consSequencesApi8?usages=Ch,Dhw` | Metered consumption series |
+| `GET remote/reports/{gw}/energyAccount` | Last month's gas/electric totals |
 
 Routes recovered from the binary that were **not** confirmed against this
 gateway:
@@ -143,12 +146,11 @@ gateway:
 `remote/plants/{gw}/reset`, `remote/plants/{gw}/name`,
 `remote/plants/{gw}/measurementSystem`,
 `remote/plants/{gw}/consumptionsSettings`,
-`remote/plants/{gw}/getConsumptionsSettings`,
 `remote/plants/{gw}/smartComfortPreferences`,
 `remote/plants/{gw}/errorNotificationSettings`,
 `remote/plants/{gw}/engagementNotificationSettings`,
 `remote/actions/{gw}/mostRecent`,
-`remote/reports/{gw}/{energyAccount,co2Report,dailyRoomTemp,consSequencesApi8,prodSequencesApi8,reset}`,
+`remote/reports/{gw}/{co2Report,dailyRoomTemp,prodSequencesApi8,reset}`,
 `remote/velis/…`.
 
 On the test gateway these BSB-family routes answered HTTP 500
@@ -286,6 +288,109 @@ There is **no** water pressure, CH flow temperature or CH setpoint in this
 payload on this gateway family. Earlier drafts of the integration exposed
 sensors for those based on speculative field names; they were removed rather
 than left to report `unknown` forever.
+
+## Energy and consumption
+
+Two routes carry metered consumption. Neither is listed in the app's route
+table in a way that suggests a query language, but both were confirmed against
+the test gateway.
+
+### `POST remote/plants/{gw}/getConsumptionsSettings` (verified)
+
+Takes an empty JSON body and returns the account's display preferences:
+
+```json
+{"currency": 20, "gasType": 0, "gasEnergyUnit": 1, "elecCost": 0.2, "gasCost": 5.0}
+```
+
+* `gasEnergyUnit` is the **display** unit: `{kWh: 0, GigaJoule: 1, Therm: 2,
+  MegaBtu: 3, Smc: 4, m3: 5, Liter: 6, Gallons: 7}`.
+* It does **not** change what the sequences route returns. Do not convert by
+  it — see below.
+* The sibling route `POST remote/plants/{gw}/consumptionsSettings` answers HTTP
+  500 for writing, so settings can be read but not written through these two
+  names.
+
+### `GET remote/reports/{gw}/consSequencesApi8?usages=Ch,Dhw` (verified)
+
+`usages` accepts the **family** names only. The per-appliance members
+(`ChBoilerGas`, `DhwBoilerGas`, `ChHpGas`, all `*Elec` members, `RoomTemp`,
+`StandbyElec`, …) answer HTTP 500 on this gateway, as does a bogus name. The
+families expand to every member they contain.
+
+The reply is an array of blocks:
+
+```json
+[
+  {"k": 7,  "p": 4, "v": [0.0, 0.0, 0.0, 0.0, 1293.43, 289.38, "..."]},
+  {"k": 10, "p": 4, "v": [0.0, 0.0, 0.0, 0.0,  878.55, 1486.81, "..."]}
+]
+```
+
+* `k` selects the usage:
+
+  | Family | `k` | Meaning |
+  | --- | --- | --- |
+  | `Ch` | 1 | Space heating total |
+  | `Ch` | 7 | **Space heating gas** |
+  | `Ch` | 20 | Space heating electricity |
+  | `Dhw` | 2 | DHW total |
+  | `Dhw` | 10 | **DHW gas** |
+  | `Dhw` | 21 | DHW electricity |
+
+  `k=1` ≈ `k=7` + `k=20` and `k=2` ≈ `k=10` + `k=21`, i.e. the "total" member
+  is the sum of the energy carriers.
+
+* `p` selects the bucket size:
+
+  | `p` | Series | Length | Order |
+  | --- | --- | --- | --- |
+  | 1 | Last 24 hours | 24 | hourly, oldest first |
+  | 2 | Last 7 days | 7 | daily, oldest first |
+  | 3 | Daily | 34 | daily, oldest first, **ends yesterday** |
+  | 4 | Monthly | 22 | calendar month, oldest first |
+
+  `p=3`'s trailing 7 entries equal `p=2` byte for byte, and its last 31
+  entries sum to `p=4`'s last entry. That is the proof for both the period
+  meaning and the month alignment.
+
+* `v` is the series itself. The first entries of `p=4` are `0.0` because they
+  predate the meter being active; they are not a bug and must not be filtered
+  out as "missing".
+
+The values are **kWh**. Three independent lines of evidence:
+
+1. The route is bound in the shipped binary as
+   `consKwhSequencesAuthToken:gatewayId:usages:usageApi8:completionHandler:`
+   — the name says kWh, independently of the account's display unit.
+2. `p=3`'s last 31 daily entries sum to `1786.589` and `p=4`'s last entry is
+   `1786.602`: the daily series rolls up into the monthly bucket, so both are
+   the same quantity in the same unit.
+3. `p=4`'s last entry for `k=10` is `1786.602` and `energyAccount` reports
+   `{"use": 2, "gas": 1787}`; `k=7`'s is `814.563` against `{"use": 1,
+   "gas": 821}`. The two routes agree to rounding. `use: 1` is space heating
+   and `use: 2` is DHW.
+
+The magnitudes rule out the other candidates. Under a GigaJoule reading, the
+`p=1` hourly DHW series would average 0.17 kWh per hour, and the last month's
+`1786.6 GJ` would be 496 kWh — an implausibly small annual gas bill for a
+boiler that also heats a cylinder. Under m³ the daily DHW figure would be
+4.2 m³ (≈39 GJ/year) for hot water alone. kWh fits both the daily and monthly
+figures.
+
+### `GET remote/reports/{gw}/energyAccount` (verified)
+
+```json
+{"LastMonth": [{"use": 1, "gas": 821, "elect": 0}, {"use": 2, "gas": 1787, "elect": 0}]}
+```
+
+The route ignores `period`, `from` and `to` entirely — every variant returns
+the same `LastMonth` object. It is useful as a cross-check because it is a
+separate code path, but `consSequencesApi8` is the one that carries history.
+`elect` is `0` on a boiler gateway.
+
+`GET remote/reports/{gw}/co2Report` answers HTTP 599 (upstream gateway error)
+on this plant, so no CO₂ reading is exposed.
 
 ## Writes
 

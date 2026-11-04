@@ -47,16 +47,31 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import timedelta
 import logging
-from typing import Any
+import time
+from typing import Any, Final
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api import NtiNetApiClient, NtiNetAuthError, NtiNetError, NtiNetRateLimitError
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, MIN_SCAN_INTERVAL
+from .const import (
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    GAS_USAGE_DHW,
+    GAS_USAGE_HEATING,
+    MIN_SCAN_INTERVAL,
+    SEQUENCE_PERIOD_DAILY,
+    SEQUENCE_PERIOD_MONTHLY,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+#: Consumption changes slowly, so it is refreshed on its own slower cadence.
+#: Polling the report route every scan interval would cost an extra request per
+#: gateway per poll for data that moves once a day.
+CONSUMPTION_REFRESH_SECONDS: Final = 3600
 
 
 @dataclass
@@ -134,10 +149,23 @@ class NtiNetPlant:
     allowed_dhw_modes: list[int] = field(default_factory=list)
     dhw_disabled: bool | None = None
     is_online: bool | None = None
+    # Metered gas, all in kWh (the cloud reports this route in kWh)
+    gas_last_month: float | None = None
+    gas_heating_last_month: float | None = None
+    gas_dhw_last_month: float | None = None
+    gas_this_month: float | None = None
+    gas_this_month_heating: float | None = None
+    gas_this_month_dhw: float | None = None
+    gas_yesterday: float | None = None
     # Children
     zones: dict[int, NtiNetZone] = field(default_factory=dict)
     features: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def has_metering(self) -> bool:
+        """Return whether the appliance reports consumption at all."""
+        return _as_bool(self.features.get("hasMetering"), default=False) is True
 
     @property
     def has_dhw(self) -> bool:
@@ -175,6 +203,8 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
             config_entry=entry,
         )
         self.client = client
+        self._consumption_cache: dict[str, dict[str, float | None]] = {}
+        self._consumption_fetched_at: dict[str, float] = {}
 
     async def _async_update_data(self) -> dict[str, NtiNetPlant]:
         """Fetch every plant, then the detail for each one."""
@@ -250,12 +280,69 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
             if data:
                 plant.raw = {"bsb": data}
                 self._apply_bsb(plant, data)
+                await self._async_apply_consumption(plant)
                 return
             plant.is_online = False
             return
 
         plant.raw = data
         self._apply_plant(plant, data)
+        await self._async_apply_consumption(plant)
+
+    async def _async_apply_consumption(self, plant: NtiNetPlant) -> None:
+        """Fill in the metered gas readings, if this gateway meters.
+
+        The report route is expensive and slow-moving, so it is only read when
+        the appliance advertises metering, and at most once per
+        ``CONSUMPTION_REFRESH_SECONDS``.  A failure here must never fail the
+        poll: the rest of the device is still perfectly usable, and this is an
+        extra request on top of the main read.
+        """
+        if not plant.has_metering:
+            return
+        now = time.monotonic()
+        last = self._consumption_fetched_at.get(plant.gateway_id)
+        if last is not None and now - last < CONSUMPTION_REFRESH_SECONDS:
+            self._restore_consumption(plant)
+            return
+
+        try:
+            blocks = await self.client.async_get_consumption_sequences(
+                plant.gateway_id
+            )
+        except NtiNetRateLimitError as err:
+            # The account is throttled.  This route is secondary, so keep the
+            # device usable with the last known figures and wait a full cycle
+            # before asking again rather than adding to the throttling.
+            _LOGGER.debug(
+                "Consumption for %s deferred, throttled for %ss",
+                plant.gateway_id,
+                err.retry_after,
+            )
+            self._consumption_fetched_at[plant.gateway_id] = now
+            self._restore_consumption(plant)
+            return
+        except NtiNetError as err:
+            _LOGGER.debug(
+                "No consumption data for %s: %s", plant.gateway_id, err
+            )
+            self._restore_consumption(plant)
+            return
+
+        readings = _parse_consumption(blocks)
+        if readings:
+            self._consumption_cache[plant.gateway_id] = readings
+            self._consumption_fetched_at[plant.gateway_id] = now
+            for attribute, value in readings.items():
+                setattr(plant, attribute, value)
+
+    def _restore_consumption(self, plant: NtiNetPlant) -> None:
+        """Re-apply the last successful readings for one gateway."""
+        previous = self._consumption_cache.get(plant.gateway_id)
+        if previous is None:
+            return
+        for attribute, value in previous.items():
+            setattr(plant, attribute, value)
 
     def _apply_plant(self, plant: NtiNetPlant, data: dict[str, Any]) -> None:
         """Copy plant readings out of the generic ``plantData`` envelope."""
@@ -380,6 +467,110 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
             zone.room_temp = room
 
         plant.zones[number] = zone
+
+
+def _parse_consumption(
+    blocks: list[dict[str, Any]],
+) -> dict[str, float | None]:
+    """Turn ``consSequencesApi8`` blocks into gas readings, in kWh.
+
+    Only gas is extracted.  The electricity members exist but a boiler gateway
+    reports zero for them, and a sensor that is always zero is worse than no
+    sensor at all.
+
+    The two period lengths that matter:
+
+    * ``p = 4`` is **monthly**, one entry per calendar month, oldest first.
+      The last completed month's entry is the running total the app shows in
+      its energy breakdown, and it matches ``energyAccount``'s ``gas`` to
+      within rounding.
+    * ``p = 3`` is **daily**, one entry per day, oldest first.  The last entry
+      is yesterday.  Its trailing days sum to the monthly bucket, which is how
+      the mapping was confirmed.
+
+    Both are totals per bucket, not cumulative meters.  The month-to-date
+    readings are therefore derived from the daily series, which is the only
+    source that includes days of the current month.
+    """
+    daily: dict[int, list[float]] = {}
+    monthly: dict[int, list[float]] = {}
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        kind = _as_int(block.get("k"))
+        period = _as_int(block.get("p"))
+        values = block.get("v")
+        if kind is None or period is None or not isinstance(values, list):
+            continue
+        cleaned = [
+            number for item in values if (number := _as_float(item)) is not None
+        ]
+        if not cleaned:
+            continue
+        if period == SEQUENCE_PERIOD_DAILY:
+            daily[kind] = cleaned
+        elif period == SEQUENCE_PERIOD_MONTHLY:
+            monthly[kind] = cleaned
+
+    heating_month = _last(monthly.get(GAS_USAGE_HEATING))
+    dhw_month = _last(monthly.get(GAS_USAGE_DHW))
+    heating_day = _last(daily.get(GAS_USAGE_HEATING))
+    dhw_day = _last(daily.get(GAS_USAGE_DHW))
+
+    to_date = _month_to_date(daily)
+
+    return {
+        # Last completed calendar month, matching the app's energy screen.
+        "gas_heating_last_month": heating_month,
+        "gas_dhw_last_month": dhw_month,
+        "gas_last_month": _add(heating_month, dhw_month),
+        # Month to date, which is what a running sensor should expose.
+        "gas_this_month_heating": to_date.get(GAS_USAGE_HEATING),
+        "gas_this_month_dhw": to_date.get(GAS_USAGE_DHW),
+        "gas_this_month": _add(
+            to_date.get(GAS_USAGE_HEATING), to_date.get(GAS_USAGE_DHW)
+        ),
+        # The most recent complete day (yesterday).
+        "gas_yesterday": _add(heating_day, dhw_day),
+    }
+
+
+def _last(values: list[float] | None) -> float | None:
+    """Return the newest entry of a series, rounded."""
+    if not values:
+        return None
+    return round(values[-1], 3)
+
+
+def _add(first: float | None, second: float | None) -> float | None:
+    """Add two optional readings."""
+    if first is None and second is None:
+        return None
+    return round((first or 0.0) + (second or 0.0), 3)
+
+
+def _month_to_date(daily: dict[int, list[float]]) -> dict[int, float]:
+    """Sum the part of each daily series that belongs to the current month.
+
+    The daily series ends yesterday and reaches back into the previous month,
+    so the split is taken from today's date rather than a fixed offset: the
+    last ``day - 1`` entries are the current month's completed days.
+
+    On the first of the month no day of the current month has completed yet,
+    which is a genuine zero rather than missing data, so the series that are
+    present report ``0.0``.
+    """
+    days = dt_util.now().date().day - 1
+    if days <= 0:
+        # The first of the month: nothing has accrued in it yet.  Reporting
+        # zero keeps the running total from flickering to `unknown` and back.
+        return {kind: 0.0 for kind in daily}
+    result: dict[int, float] = {}
+    for kind, values in daily.items():
+        if len(values) < days:
+            continue
+        result[kind] = round(sum(values[-days:]), 3)
+    return result
 
 
 def _system_type_name(system_type: Any) -> str | None:
