@@ -358,25 +358,38 @@ The reply is an array of blocks:
   predate the meter being active; they are not a bug and must not be filtered
   out as "missing".
 
-The values are **kWh**. Three independent lines of evidence:
+The values are **kWh**.
 
-1. The route is bound in the shipped binary as
-   `consKwhSequencesAuthToken:gatewayId:usages:usageApi8:completionHandler:`
-   — the name says kWh, independently of the account's display unit.
-2. `p=3`'s last 31 daily entries sum to `1786.589` and `p=4`'s last entry is
-   `1786.602`: the daily series rolls up into the monthly bucket, so both are
-   the same quantity in the same unit.
-3. `p=4`'s last entry for `k=10` is `1786.602` and `energyAccount` reports
-   `{"use": 2, "gas": 1787}`; `k=7`'s is `814.563` against `{"use": 1,
-   "gas": 821}`. The two routes agree to rounding. `use: 1` is space heating
-   and `use: 2` is DHW.
+Note which arguments actually establish that. Cross-route agreement (below) only
+proves the routes share a unit — it would hold equally if both were GJ. The unit
+itself is pinned by two things:
 
-The magnitudes rule out the other candidates. Under a GigaJoule reading, the
-`p=1` hourly DHW series would average 0.17 kWh per hour, and the last month's
-`1786.6 GJ` would be 496 kWh — an implausibly small annual gas bill for a
-boiler that also heats a cylinder. Under m³ the daily DHW figure would be
-4.2 m³ (≈39 GJ/year) for hot water alone. kWh fits both the daily and monthly
-figures.
+1. **The route is named for the unit.** The shipped binary binds it as
+   `consKwhSequencesAuthToken:gatewayId:usages:usageApi8:completionHandler:`,
+   and the client-side type is `eGasEnergyUnit` with a `kWh: 0` member. The
+   `gasEnergyUnit` field is a *display* preference applied by the app after the
+   fact, which is why the account can say GigaJoule while the wire carries kWh.
+2. **The annual total is a normal household's.** Summing all 18 real months
+   (skipping the four pre-activation zeros) gives **33,416 raw units per
+   year**. Read as kWh that is **120.3 GJ/year** — squarely in the 80–120 GJ
+   range of a typical Alberta detached house, and 10 GJ in an average month,
+   which is exactly what a Canadian gas bill quotes. Read as GJ it would be
+   9.3 million kWh/year, or roughly 278× a normal house. Nothing else on the
+   list (m³, therm, MBtu) lands in range either.
+
+The cross-route checks then confirm the two routes agree, which rules out an
+offset or a different scaling between them:
+
+* `p=3`'s last 31 daily entries sum to `1786.589` and `p=4`'s last entry is
+  `1786.602`: the daily series rolls up into the monthly bucket.
+* `p=4`'s last entry for `k=10` is `1786.602` and `energyAccount` reports
+  `{"use": 2, "gas": 1787}`; `k=7`'s is `814.563` against `{"use": 1,
+  "gas": 821}`. `use: 1` is space heating and `use: 2` is DHW.
+
+One caution recorded deliberately: `gasEnergyUnit` being `1` (GigaJoule in the
+client enum) invites dividing by 3.6 or 277.78. That would be wrong twice over —
+once because the series is already kWh, and once because the enum index is a
+display hint, not a transform the integration is meant to reverse.
 
 ### `GET remote/reports/{gw}/energyAccount` (verified)
 
