@@ -343,16 +343,21 @@ The reply is an array of blocks:
 
 * `p` selects the bucket size:
 
-  | `p` | Series | Length | Order |
-  | --- | --- | --- | --- |
-  | 1 | Last 24 hours | 24 | hourly, oldest first |
-  | 2 | Last 7 days | 7 | daily, oldest first |
-  | 3 | Daily | 34 | daily, oldest first, **ends yesterday** |
-  | 4 | Monthly | 22 | calendar month, oldest first |
+  | `p` | Series | Length | Order | Status |
+  | --- | --- | --- | --- | --- |
+  | 1 | see below | 24 | oldest first | **unresolved** |
+  | 2 | Last 7 days | 7 | daily, oldest first | verified |
+  | 3 | Daily | 34 | daily, oldest first, **ends yesterday** | verified |
+  | 4 | Monthly | 22 | calendar month, oldest first | verified |
 
   `p=3`'s trailing 7 entries equal `p=2` byte for byte, and its last 31
   entries sum to `p=4`'s last entry. That is the proof for both the period
   meaning and the month alignment.
+
+  `p=1` is **not** solved. Its 24 values do not sum to the last day in `p=3`
+  (100.56 vs 52.13) and are not a tail of it, so it is neither an hourly
+  breakdown of one day nor the last 24 days. The integration never reads
+  `p=1`; record it as unknown rather than guessing a meaning.
 
 * `v` is the series itself. The first entries of `p=4` are `0.0` because they
   predate the meter being active; they are not a bug and must not be filtered

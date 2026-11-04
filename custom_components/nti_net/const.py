@@ -40,8 +40,10 @@ SERVICE_SET_HOLIDAY: Final = "set_holiday"
 #:   ``Dhw`` answers ``2`` (DHW total), ``10`` (DHW gas) and ``21`` (DHW
 #:   electricity).  ``ChBoilerGas`` and the heat-pump members answer HTTP 500
 #:   on a boiler gateway, so the family filters are the way to ask.
-#: * ``p`` -- the bucket size of the series: 1 = last 24 hours, 2 = last 7
-#:   days, 3 = daily, 4 = monthly.
+#: * ``p`` -- the bucket size of the series: 2 = last 7 days, 3 = daily,
+#:   4 = monthly.  ``p = 1`` (24 entries) is not decoded and is never read.
+#:   The 24 values do not sum to a single day of the daily series, so it is
+#:   not an hourly breakdown.
 #:
 #: The route is named ``consKwhSequences`` in the shipped binary, so the values
 #: are **kWh** regardless of the account's display unit.
