@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="badge" x1="256" y1="0" x2="256" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2B3444"/>
+      <stop offset="1" stop-color="#151A23"/>
+    </linearGradient>
+    <linearGradient id="flame" x1="256" y1="118" x2="256" y2="408" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFC93C"/>
+      <stop offset="0.5" stop-color="#FF8A16"/>
+      <stop offset="1" stop-color="#E03E0A"/>
+    </linearGradient>
+    <linearGradient id="core" x1="256" y1="250" x2="256" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF8E4"/>
+      <stop offset="1" stop-color="#FFD97A"/>
+    </linearGradient>
+  </defs>
+
+  <circle cx="256" cy="256" r="248" fill="url(#badge)"/>
+  <circle cx="256" cy="256" r="248" fill="none" stroke="#FF8A16" stroke-opacity="0.28" stroke-width="8"/>
+
+  <!-- Flame -->
+  <path fill="url(#flame)"
+        d="M256 116
+           C 296 174, 350 216, 366 278
+           C 382 338, 356 386, 308 404
+           C 292 410, 274 413, 256 413
+           C 238 413, 220 410, 204 404
+           C 156 386, 130 338, 146 278
+           C 162 216, 216 174, 256 116 Z"/>
+
+  <!-- Inner core -->
+  <path fill="url(#core)"
+        d="M256 244
+           C 279 280, 296 306, 296 332
+           C 296 362, 278 380, 256 382
+           C 234 380, 216 362, 216 332
+           C 216 306, 233 280, 256 244 Z"/>
+</svg>

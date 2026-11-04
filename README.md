@@ -34,6 +34,20 @@ Only what the appliance actually reports is created. A gateway with no cylinder
 gets no water heater, a zone without a room probe shows no room temperature, and
 hidden virtual zones are skipped.
 
+## Icon
+
+The icon in `custom_components/nti_net/brand/` is original artwork (a flame on a
+dark badge) rendered from `icon.svg` — not the vendor's logo. Home Assistant
+serves it from `/api/brands/integration/nti_net/icon.png`; no brands CDN
+submission is involved.
+
+To regenerate the PNGs after editing the SVG:
+
+```bash
+rsvg-convert -w 256 -h 256 icon.svg -o icon.png
+rsvg-convert -w 512 -h 512 icon.svg -o icon@2x.png
+```
+
 ## Installation
 
 ### HACS

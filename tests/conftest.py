@@ -10,11 +10,11 @@ _real_getaddrinfo = socket.getaddrinfo
 
 @pytest.fixture(autouse=True)
 def _allow_nti_host(monkeypatch):
-    """Let the live-cloud test resolve and connect to the NTI host.
+    """Let the live-cloud tests reach the NTI host.
 
-    The HA test harness disables DNS and sockets by default. This test is an
-    opt-in integration test against the real service, so it re-enables exactly
-    one host.
+    The HA test harness disables DNS and sockets by default. These are opt-in
+    integration tests against the real service, so re-enable exactly the hosts
+    that are needed: the NTI cloud, plus localhost for the test HTTP client.
     """
     monkeypatch.setattr(
         socket,
@@ -25,7 +25,9 @@ def _allow_nti_host(monkeypatch):
         import pytest_socket
 
         pytest_socket.enable_socket()
-        pytest_socket.socket_allow_hosts([NTI_HOST], allow_unix_socket=True)
+        pytest_socket.socket_allow_hosts(
+            [NTI_HOST, "127.0.0.1", "::1"], allow_unix_socket=True
+        )
     except Exception:  # noqa: BLE001 - best effort
         pass
     yield
