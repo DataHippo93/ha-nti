@@ -17,6 +17,25 @@ from helpers import load_credentials
 DOMAIN = "nti_net"
 
 
+def _find(obj, needle, path="$"):
+    """Return the first path where ``needle`` appears as a key or a value."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str) and needle in key:
+                return f"{path}.<key {key}>"
+            found = _find(value, needle, f"{path}.{key}")
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for index, value in enumerate(obj):
+            found = _find(value, needle, f"{path}[{index}]")
+            if found:
+                return found
+    elif isinstance(obj, str) and needle in obj:
+        return path
+    return None
+
+
 async def test_password_field_is_masked(hass: HomeAssistant) -> None:
     """The password box must not render as plain text."""
     result = await hass.config_entries.flow.async_init(
@@ -74,8 +93,10 @@ async def test_diagnostics_contains_no_pii(hass: HomeAssistant) -> None:
     diag = await async_get_config_entry_diagnostics(hass, entry)
     blob = json.dumps(diag)
     print("\nplant keys:", list(diag["plants"]))
-    assert usr not in blob, "account e-mail leaked into diagnostics"
+    assert usr not in blob, f"account e-mail leaked into diagnostics: {_find(diag, usr)}"
     assert pwd not in blob, "password leaked into diagnostics"
+    for gateway in entry.runtime_data.data:
+        assert gateway not in blob, f"gateway id leaked: {_find(diag, gateway)}"
     for plant in diag["plants"].values():
         assert plant["gateway_id"] == "**REDACTED**"
         assert plant["serial"] == "**REDACTED**"

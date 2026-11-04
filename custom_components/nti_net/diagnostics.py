@@ -24,11 +24,14 @@ from .coordinator import NtiNetCoordinator
 TO_REDACT = {
     CONF_USERNAME,
     CONF_PASSWORD,
+    "title",
+    "gw",
+    "gwId",
+    "gateway_id",
+    "plantName",
     "gwSerial",
     "serial",
     "serial_number",
-    "gwId",
-    "gateway_id",
     "location",
 }
 
@@ -85,13 +88,16 @@ async def async_get_config_entry_diagnostics(
         }
 
     return {
-        "entry": {
-            "title": entry.title,
-            "data": async_redact_data(dict(entry.data), TO_REDACT),
-            "options": dict(entry.options),
-            "state": str(entry.state),
-            "api_url": entry.data.get(CONF_API_URL),
-        },
+        "entry": async_redact_data(
+            {
+                "title": entry.title,
+                "data": dict(entry.data),
+                "options": dict(entry.options),
+                "state": str(entry.state),
+                "api_url": entry.data.get(CONF_API_URL),
+            },
+            TO_REDACT,
+        ),
         "coordinator": {
             "last_update_success": coordinator.last_update_success,
             "update_interval": (
