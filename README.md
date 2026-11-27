@@ -251,3 +251,14 @@ The cloud keeps no fault history, so the Fault code sensor's history in Home
 Assistant is the log. These cost three extra requests per poll. If the cloud
 throttles the account they are skipped until the block expires, and the
 heating and hot water entities keep working.
+
+- **Hot water** switch (combi boilers only): domestic hot water on (always
+  active) or off. Every command reads the mode from the boiler first, so a
+  change made at the boiler or in the NTI app is never overwritten by a stale
+  value and a command is never silently dropped. The write must be
+  acknowledged, and is then confirmed by reading the boiler again. The switch
+  reads `unknown` when the mode cannot be read. Use `turn_on` / `turn_off`
+  in automations, not `toggle`: Home Assistant treats a toggle on an unknown
+  switch as "turn on".
+- On a combi the water heater entity now shows the real mode. The aggregated
+  read reports mode 0 there whatever the boiler is doing.

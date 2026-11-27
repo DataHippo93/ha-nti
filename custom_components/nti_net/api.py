@@ -414,8 +414,16 @@ class NtiNetApiClient:
     async def async_set_dhw_mode(
         self, gateway_id: str, new: int, old: int | None = None
     ) -> None:
-        """Set domestic hot water mode."""
-        await self._write(f"remote/plantData/{gateway_id}/dhwMode", new, old)
+        """Set domestic hot water mode.
+
+        The answer is checked: the cloud acknowledges an applied write with
+        ``{"success": true}``.  Anything else (a 404, an empty or non-JSON
+        body, ``success: false``) raises, so a caller never shows a mode the
+        appliance did not take.
+        """
+        await self._write(
+            f"remote/plantData/{gateway_id}/dhwMode", new, old, require_ack=True
+        )
 
     async def async_set_dhw_temperature(
         self, gateway_id: str, new: float, old: float | None = None
@@ -519,11 +527,19 @@ class NtiNetApiClient:
         old: Any,
         *,
         params: dict[str, Any] | None = None,
+        require_ack: bool = False,
     ) -> None:
-        """POST a `{"new": ..., "old": ...}` envelope."""
-        await self._raw_request(
+        """POST a `{"new": ..., "old": ...}` envelope.
+
+        With ``require_ack`` the answer must be ``{"success": true}``.
+        """
+        data = await self._raw_request(
             "POST", path, params=params, body={"new": new, "old": old}
         )
+        if require_ack and not (
+            isinstance(data, dict) and data.get("success") is True
+        ):
+            raise NtiNetError(f"POST {path} was not acknowledged: {data!r}"[:200])
 
     async def async_close(self) -> None:
         """Drop the stored token."""

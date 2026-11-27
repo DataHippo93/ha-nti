@@ -118,6 +118,9 @@ class NtiNetWaterHeater(NtiNetEntity, WaterHeaterEntity):
         plant = self.plant
         if plant is None or plant.dhw_mode is None:
             return None
+        if not plant.dhw_mode_trusted:
+            # A combi's aggregated read says 0 whatever the real mode is.
+            return None
         return DhwMode.NAMES.get(plant.dhw_mode)
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
@@ -146,10 +149,20 @@ class NtiNetWaterHeater(NtiNetEntity, WaterHeaterEntity):
         new_mode = DhwMode.VALUES.get(operation_mode)
         if new_mode is None:
             return
+        if not plant.dhw_mode_trusted:
+            # The write carries the last observed mode; without one it would
+            # send a value known to be wrong.
+            raise HomeAssistantError(
+                "The current hot water mode is not known yet; try again after "
+                "the next update"
+            )
         try:
             await self.coordinator.client.async_set_dhw_mode(
                 self._plant_id, new=new_mode, old=plant.dhw_mode
             )
         except NtiNetError as err:
             raise HomeAssistantError(f"Could not set hot water mode: {err}") from err
+        # Shared with the hot water switch, so neither entity acts on a mode
+        # the other has just changed.
+        self.coordinator.note_dhw_write(self._plant_id, new_mode)
         await self.coordinator.async_request_refresh()

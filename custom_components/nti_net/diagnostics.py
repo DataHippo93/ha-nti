@@ -88,6 +88,7 @@ async def async_get_config_entry_diagnostics(
             "pressure": plant.pressure,
             "signal_level": plant.signal_level,
             "auto_thermoreg": plant.auto_thermoreg,
+            "dhw_mode_item": plant.dhw_mode_item,
             # Parsed fields only.  The raw cloud entries are free-form and
             # could carry identifiers the redaction list does not know, so
             # only their key names are dumped.

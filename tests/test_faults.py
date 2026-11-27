@@ -114,6 +114,7 @@ async def test_healthy_boiler_reads_ok_and_service_values() -> None:
         "ChFlowTemp",
         "HeatingCircuitPressure",
         "AutomaticThermoregulation",
+        "DhwMode",
     }
     assert tuple(client.requested_menu) == (124, 119)
 
