@@ -493,3 +493,36 @@ Tested against a `gwSysType 3` gateway on firmware `104.115.28B`:
 * no room sensor (`roomSens: false`)
 * cylinder present (`dhwBoiler: true`, `dhwStoreT 54 °C`, setpoint 53 °C)
 * no cooling, no pilot, no fireplace, no metering
+
+
+## Faults and service readings (added in the DataHippo93 fork)
+
+Verified against a live `gwSysType` 3 gateway, firmware `104.115.28B`, on
+2026-11-26. All three are reads; nothing here writes to the appliance.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `busErrors?gatewayId={gw}&blockingOnly=False&culture=en-US` | Faults active right now. 200 with `[]` while healthy. `blockingOnly=True` narrows it to lockouts. |
+| POST | `remote/dataItems/{gw}/get?umsys=si` | Named items. Body `{"useCache": false, "items": [{"id", "zn"}], "features": <features payload>}`. |
+| GET | `menuItems/{gw}?menuItems=124,119&umsys=si` | Service-menu values by numeric id. |
+
+Notes:
+
+- `busErrors` lives directly under `api/v2/`, not under `remote/`. The guesses
+  `remote/plants/{gw}/errors`, `remote/plants/{gw}/errorsHistory` and
+  `remote/reports/{gw}/errors` are 404. `busErrors/history` answers 200 with
+  `[]`, which may be an alias rather than a history. No fault history was
+  found, so a fault has to be caught while it is active.
+- The shape of a fault entry has not been seen live (the list was empty). The
+  parser assumes the shared remotethermo fields (`code`, `fault`, `errDex`,
+  `blk`, `res`, `timestamp`) and keeps the untouched entry as `raw`.
+- Data items answered by the reference gateway: `PlantMode`, `IsFlameOn`,
+  `OutsideTemp`, `HeatingCircuitPressure` (bar), `ChFlowSetpointTemp`,
+  `ChFlowTemp`, `DhwTemp`, `DhwMode`, `AutomaticThermoregulation`, `Holiday`,
+  and per zone `ZoneHeatRequest`, `ZoneMode`, `ZoneMeasuredTemp`,
+  `ZoneDesiredTemp`, `ZoneComfortTemp`, `ZoneEconomyTemp`, `ZoneDeroga`.
+  Unknown ids are left out of the answer rather than failing the request
+  (46 of 77 guessed ids, including return temperature, modulation, fan and
+  pump speed, were not answered).
+- Menu items answered: `124` CH return temperature (`T_8.3.2`) and `119`
+  signal level (`T_19.1.1`). Ids 13, 116, 223, 227 and 228 were not.

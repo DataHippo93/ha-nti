@@ -82,6 +82,30 @@ async def async_get_config_entry_diagnostics(
             "dhw_setpoint": plant.dhw_setpoint,
             "dhw_reduced_temp": plant.dhw_reduced_temp,
             "has_dhw": plant.has_dhw,
+            "flow_temp": plant.flow_temp,
+            "flow_setpoint": plant.flow_setpoint,
+            "return_temp": plant.return_temp,
+            "pressure": plant.pressure,
+            "signal_level": plant.signal_level,
+            "auto_thermoreg": plant.auto_thermoreg,
+            # Parsed fields only.  The raw cloud entries are free-form and
+            # could carry identifiers the redaction list does not know, so
+            # only their key names are dumped.
+            "faults": (
+                None
+                if plant.faults is None
+                else [
+                    {
+                        "code": fault.get("code"),
+                        "description": fault.get("description"),
+                        "blocking": fault.get("blocking"),
+                        "reset": fault.get("reset"),
+                        "timestamp": fault.get("timestamp"),
+                        "raw_keys": sorted(fault.get("raw") or {}),
+                    }
+                    for fault in plant.faults
+                ]
+            ),
             "zones": zones,
             "features": async_redact_data(plant.features, TO_REDACT),
             "raw": async_redact_data(plant.raw, TO_REDACT),

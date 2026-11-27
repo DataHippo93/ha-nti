@@ -57,10 +57,18 @@ from homeassistant.util import dt as dt_util
 
 from .api import NtiNetApiClient, NtiNetAuthError, NtiNetError, NtiNetRateLimitError
 from .const import (
+    DATA_ITEM_AUTO_THERMOREG,
+    DATA_ITEM_FLOW_SETPOINT,
+    DATA_ITEM_FLOW_TEMP,
+    DATA_ITEM_PRESSURE,
     DEFAULT_SCAN_INTERVAL,
+    DIAGNOSTIC_DATA_ITEMS,
+    DIAGNOSTIC_MENU_ITEMS,
     DOMAIN,
     GAS_USAGE_DHW,
     GAS_USAGE_HEATING,
+    MENU_ITEM_RETURN_TEMP,
+    MENU_ITEM_SIGNAL_LEVEL,
     MIN_SCAN_INTERVAL,
     SEQUENCE_PERIOD_DAILY,
     SEQUENCE_PERIOD_MONTHLY,
@@ -72,6 +80,18 @@ _LOGGER = logging.getLogger(__name__)
 #: Polling the report route every scan interval would cost an extra request per
 #: gateway per poll for data that moves once a day.
 CONSUMPTION_REFRESH_SECONDS: Final = 3600
+
+#: How long to leave the extra reads alone after a 429 that names no delay.
+DIAGNOSTICS_BACKOFF_SECONDS: Final = 300
+
+#: Keys that identify the gateway or its owner.  They are stripped from the
+#: fault payload kept on the sensor, which ends up in the recorder.
+_FAULT_PRIVATE_KEYS: Final = frozenset(
+    {"gw", "gwId", "gatewayId", "gwSerial", "sn", "plantId", "mac", "macAddress"}
+)
+
+#: A fault list longer than this is cut, to keep the attributes small.
+MAX_FAULTS: Final = 10
 
 
 @dataclass
@@ -157,10 +177,34 @@ class NtiNetPlant:
     gas_this_month_heating: float | None = None
     gas_this_month_dhw: float | None = None
     gas_yesterday: float | None = None
+    # Diagnostics read from the data-item and service-menu routes
+    flow_temp: float | None = None
+    flow_setpoint: float | None = None
+    return_temp: float | None = None
+    pressure: float | None = None
+    signal_level: float | None = None
+    auto_thermoreg: bool | None = None
+    #: Active faults.  ``None`` means "could not be read", which is not the
+    #: same as an empty list ("read fine, nothing wrong").
+    faults: list[dict[str, Any]] | None = None
     # Children
     zones: dict[int, NtiNetZone] = field(default_factory=dict)
     features: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def has_fault(self) -> bool | None:
+        """Return whether a fault is active, or None when that is unknown."""
+        if self.faults is None:
+            return None
+        return bool(self.faults)
+
+    @property
+    def blocking_fault(self) -> bool | None:
+        """Return whether an active fault is a lockout that needs a reset."""
+        if self.faults is None:
+            return None
+        return any(fault.get("blocking") is True for fault in self.faults)
 
     @property
     def has_metering(self) -> bool:
@@ -204,6 +248,8 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
         )
         self.client = client
         self._consumption_cache: dict[str, dict[str, float | None]] = {}
+        self._diagnostics_blocked_until: dict[str, float] = {}
+        self._fault_read_failing: set[str] = set()
         self._consumption_fetched_at: dict[str, float] = {}
 
     async def _async_update_data(self) -> dict[str, NtiNetPlant]:
@@ -287,7 +333,97 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
 
         plant.raw = data
         self._apply_plant(plant, data)
+        await self._async_apply_diagnostics(plant)
         await self._async_apply_consumption(plant)
+
+    async def _async_apply_diagnostics(self, plant: NtiNetPlant) -> None:
+        """Read the faults and the service readings for one gateway.
+
+        These are three extra requests on top of the main read, and none of
+        them may fail the poll: the climate and hot water entities come from
+        the main read and must stay usable whatever happens here.
+
+        Throttling is handled the way the consumption read handles it.  The
+        remaining requests of this poll are skipped, and the diagnostics are
+        left alone until the delay the cloud asked for has passed, so an
+        account that is already blocked is not sent more requests.
+
+        A fault read that fails or is skipped leaves ``faults`` as ``None`` so
+        the fault sensors report "unknown".  Reporting "OK" there would hide
+        the very thing these sensors exist to catch.
+        """
+        gateway_id = plant.gateway_id
+        blocked = _state(self, "_diagnostics_blocked_until", dict)
+        failing = _state(self, "_fault_read_failing", set)
+
+        if time.monotonic() < blocked.get(gateway_id, 0.0):
+            return
+
+        try:
+            plant.faults = [
+                _parse_fault(entry)
+                for entry in await self.client.async_get_bus_errors(gateway_id)
+            ]
+            failing.discard(gateway_id)
+        except NtiNetRateLimitError as err:
+            self._defer_diagnostics(gateway_id, err)
+            return
+        except NtiNetError as err:
+            plant.faults = None
+            # Say so once, loudly: a fault sensor stuck on "unknown" with only
+            # a debug line behind it is easy to miss.
+            if gateway_id not in failing:
+                failing.add(gateway_id)
+                _LOGGER.warning(
+                    "Cannot read faults for %s, the fault sensors will be "
+                    "unknown until this recovers: %s",
+                    plant.name,
+                    err,
+                )
+
+        try:
+            items = await self.client.async_get_data_items(
+                gateway_id,
+                [{"id": name, "zn": 0} for name in DIAGNOSTIC_DATA_ITEMS],
+                plant.features,
+            )
+        except NtiNetRateLimitError as err:
+            self._defer_diagnostics(gateway_id, err)
+            return
+        except NtiNetError as err:
+            _LOGGER.debug("No data items for %s: %s", gateway_id, err)
+            items = []
+        values = _item_values(items, "id")
+        plant.flow_setpoint = _as_float(values.get(DATA_ITEM_FLOW_SETPOINT))
+        plant.flow_temp = _as_float(values.get(DATA_ITEM_FLOW_TEMP))
+        plant.pressure = _as_float(values.get(DATA_ITEM_PRESSURE))
+        plant.auto_thermoreg = _as_bool(values.get(DATA_ITEM_AUTO_THERMOREG))
+
+        try:
+            menu = await self.client.async_get_menu_items(
+                gateway_id, DIAGNOSTIC_MENU_ITEMS
+            )
+        except NtiNetRateLimitError as err:
+            self._defer_diagnostics(gateway_id, err)
+            return
+        except NtiNetError as err:
+            _LOGGER.debug("No menu items for %s: %s", gateway_id, err)
+            menu = []
+        menu_values = _item_values(menu, "id")
+        plant.return_temp = _as_float(menu_values.get(MENU_ITEM_RETURN_TEMP))
+        plant.signal_level = _as_float(menu_values.get(MENU_ITEM_SIGNAL_LEVEL))
+
+    def _defer_diagnostics(
+        self, gateway_id: str, err: NtiNetRateLimitError
+    ) -> None:
+        """Hold the extra reads off until the cloud's block has expired."""
+        delay = err.retry_after or DIAGNOSTICS_BACKOFF_SECONDS
+        _state(self, "_diagnostics_blocked_until", dict)[gateway_id] = (
+            time.monotonic() + delay
+        )
+        _LOGGER.debug(
+            "Diagnostics for %s deferred, throttled for %ss", gateway_id, delay
+        )
 
     async def _async_apply_consumption(self, plant: NtiNetPlant) -> None:
         """Fill in the metered gas readings, if this gateway meters.
@@ -467,6 +603,73 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
             zone.room_temp = room
 
         plant.zones[number] = zone
+
+
+def _item_values(items: list[dict[str, Any]], key: str) -> dict[Any, Any]:
+    """Index data-item or menu-item answers by id, skipping unusable ones.
+
+    Both routes flag a reading they could not take with ``error`` (and the
+    data-item route also with ``invalid``); such a value is dropped so the
+    sensor reports "unknown" instead of a stale or meaningless number.
+    """
+    result: dict[Any, Any] = {}
+    for item in items:
+        if item.get("error") is True or item.get("invalid") is True:
+            continue
+        identifier = item.get(key)
+        if identifier is None or "value" not in item:
+            continue
+        result[identifier] = item["value"]
+    return result
+
+
+def _state(coordinator: Any, name: str, factory: Any) -> Any:
+    """Return a per-coordinator bookkeeping container, creating it on demand.
+
+    The parser tests build a coordinator without running ``__init__``, so the
+    containers cannot be assumed to exist.
+    """
+    value = getattr(coordinator, name, None)
+    if value is None:
+        value = factory()
+        setattr(coordinator, name, value)
+    return value
+
+
+def _parse_fault(entry: dict[str, Any]) -> dict[str, Any]:
+    """Normalise one ``busErrors`` entry.
+
+    The route was only ever observed empty on the reference gateway, so the
+    field names are taken from the shared Ariston/remotethermo payload
+    (``code``, ``fault``, ``errDex``, ``blk``, ``res``, ``timestamp``) and read
+    defensively.  The entry is also kept under ``raw``, minus the keys that
+    identify the gateway, so that a field this guess misses is still visible
+    on the sensor the first time a real fault arrives.
+    """
+    code = entry.get("code")
+    if code in (None, ""):
+        code = entry.get("fault")
+    if code in (None, "") and isinstance(entry.get("value"), (str, int)):
+        # An entry that was not an object at all: the value is all there is.
+        code = entry.get("value")
+    description = (
+        entry.get("errDex")
+        or entry.get("description")
+        or entry.get("text")
+        or entry.get("message")
+    )
+    return {
+        "code": str(code) if code not in (None, "") else None,
+        "description": _as_str(description),
+        "blocking": _as_bool(entry.get("blk")),
+        "reset": _as_str(entry.get("res")),
+        "timestamp": _as_str(entry.get("timestamp")),
+        "raw": {
+            key: value
+            for key, value in entry.items()
+            if key not in _FAULT_PRIVATE_KEYS
+        },
+    }
 
 
 def _parse_consumption(

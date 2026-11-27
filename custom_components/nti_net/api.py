@@ -320,6 +320,81 @@ class NtiNetApiClient:
         )
         return _as_list(data)
 
+    async def async_get_bus_errors(self, gateway_id: str) -> list[dict[str, Any]]:
+        """Return the faults the appliance is reporting right now.
+
+        ``GET busErrors?gatewayId={gw}&blockingOnly=False&culture=en-US``
+        answers 200 with a JSON list on a boiler gateway (``gwSysType`` 3,
+        firmware ``104.115.28B``); the list is empty while nothing is wrong.
+        The cloud keeps no history on this route, so a fault is only visible
+        while it is active and has to be caught by polling.
+
+        Raises `NtiNetError` for anything that is not a JSON list.
+        """
+        data = await self._raw_request(
+            "GET",
+            "busErrors",
+            params={
+                "gatewayId": gateway_id,
+                "blockingOnly": "False",
+                "culture": "en-US",
+            },
+        )
+        # Only a JSON list is a real answer.  ``_raw_request`` returns None
+        # for a 404, an empty body or a non-JSON page, and a dict is some
+        # other message entirely.  Coercing any of those to "no faults" would
+        # make a broken read look like a healthy boiler, so they are errors.
+        if not isinstance(data, list):
+            raise NtiNetError(
+                f"Unexpected busErrors answer of type {type(data).__name__}"
+            )
+        # Keep entries that are not objects instead of dropping them: the
+        # entry shape has not been seen live, and a dropped entry is a hidden
+        # fault.
+        return [
+            entry if isinstance(entry, dict) else {"value": entry}
+            for entry in data
+        ]
+
+    async def async_get_data_items(
+        self,
+        gateway_id: str,
+        items: list[dict[str, Any]],
+        features: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Read named data items (the generic read behind the app's screens).
+
+        ``POST remote/dataItems/{gw}/get?umsys=si`` takes
+        ``{"useCache": false, "items": [{"id", "zn"}], "features": {...}}`` and
+        answers ``{"items": [{"id", "zone", "value", "unit", ...}]}``.  Items
+        the appliance does not know are simply left out of the answer.
+        """
+        data = await self._raw_request(
+            "POST",
+            f"remote/dataItems/{gateway_id}/get",
+            params={"umsys": UNITS},
+            body={"useCache": False, "items": items, "features": features},
+        )
+        return _as_list(data)
+
+    async def async_get_menu_items(
+        self, gateway_id: str, menu_ids: tuple[int, ...]
+    ) -> list[dict[str, Any]]:
+        """Read service-menu values by numeric id.
+
+        ``GET menuItems/{gw}?menuItems=124,119&umsys=si`` answers a list of
+        ``{"id", "text", "value", "unit", ...}``; unknown ids are left out.
+        """
+        data = await self._raw_request(
+            "GET",
+            f"menuItems/{gateway_id}",
+            params={
+                "menuItems": ",".join(str(item) for item in menu_ids),
+                "umsys": UNITS,
+            },
+        )
+        return _as_list(data)
+
     async def async_get_bsb_plant_data(self, gateway_id: str) -> dict[str, Any]:
         """Return the BSB-family view, if this gateway speaks BSB."""
         data = await self._raw_request(

@@ -3,11 +3,13 @@
   "name": "NTI net",
   "codeowners": [],
   "config_flow": true,
-  "documentation": "https://github.com/asxzy/ha-nti",
+  "documentation": "https://github.com/DataHippo93/ha-nti",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/asxzy/ha-nti/issues",
-  "loggers": ["custom_components.nti_net"],
+  "issue_tracker": "https://github.com/DataHippo93/ha-nti/issues",
+  "loggers": [
+    "custom_components.nti_net"
+  ],
   "requirements": [],
-  "version": "0.1.4"
+  "version": "0.2.0"
 }

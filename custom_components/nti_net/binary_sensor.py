@@ -32,11 +32,25 @@ PLANT_BINARY_SENSORS: tuple[BinarySensorEntityDescription, ...] = (
         device_class=BinarySensorDeviceClass.RUNNING,
     ),
     BinarySensorEntityDescription(
+        key="has_fault",
+        translation_key="fault",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+    ),
+    BinarySensorEntityDescription(
+        key="auto_thermoreg",
+        translation_key="auto_thermoreg",
+        icon="mdi:thermostat-auto",
+    ),
+    BinarySensorEntityDescription(
         key="is_online",
         translation_key="online",
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
     ),
 )
+
+
+#: Flags read from routes the BSB view does not have.
+GENERIC_ONLY_KEYS: frozenset[str] = frozenset({"has_fault", "auto_thermoreg"})
 
 
 async def async_setup_entry(
@@ -49,6 +63,8 @@ async def async_setup_entry(
     entities: list[BinarySensorEntity] = []
     for plant in coordinator.data.values():
         for description in PLANT_BINARY_SENSORS:
+            if description.key in GENERIC_ONLY_KEYS and "bsb" in plant.raw:
+                continue
             entities.append(NtiNetPlantBinarySensor(coordinator, plant, description))
         for zone in plant.zones.values():
             entities.append(NtiNetZoneBinarySensor(coordinator, plant, zone))
