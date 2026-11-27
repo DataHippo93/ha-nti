@@ -475,3 +475,69 @@ async def test_write_lost_in_transit_shows_what_the_boiler_says(hass) -> None:
         assert hass.states.get(SWITCH).state == "off"  # the truth, not the old "on"
     finally:
         _stop(patches)
+
+
+# ---------------------------------------------------------------------------
+# Third review round: a recent write must never turn a command into a no-op.
+# ---------------------------------------------------------------------------
+async def test_retry_after_an_unapplied_write_is_sent_again(hass) -> None:
+    """Off is acknowledged but the boiler ignores it; the retry must write."""
+    cloud = _Cloud(2.0)
+    cloud.apply_writes = False
+    patches = await _setup(hass, cloud)
+    try:
+        with pytest.raises(HomeAssistantError):
+            await _call(hass, "turn_off")
+        assert cloud.writes == [(DhwMode.DISABLED, 2)]
+        assert hass.states.get(SWITCH).state == "on"
+
+        # The boiler now behaves.  The retry is the natural reaction to the
+        # error above and must not be swallowed by the 60 s memory.
+        cloud.apply_writes = True
+        await _call(hass, "turn_off")
+        assert len(cloud.writes) == 2
+        assert cloud.writes[-1][0] == DhwMode.DISABLED
+        assert cloud.mode == 0.0
+        assert hass.states.get(SWITCH).state == "off"
+    finally:
+        _stop(patches)
+
+
+async def test_switch_after_a_water_heater_change_is_not_dropped(hass) -> None:
+    """Switch off, water heater back to comfort, switch off again."""
+    cloud = _Cloud(2.0)
+    patches = await _setup(hass, cloud)
+    try:
+        await _call(hass, "turn_off")
+        assert cloud.mode == 0.0
+
+        await hass.services.async_call(
+            "water_heater",
+            "set_operation_mode",
+            {"entity_id": "water_heater.boiler_hot_water", "operation_mode": "comfort"},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+        assert cloud.mode == 2.0
+
+        await _call(hass, "turn_off")
+        assert cloud.writes[-1] == (DhwMode.DISABLED, 2)
+        assert cloud.mode == 0.0
+        assert hass.states.get(SWITCH).state == "off"
+    finally:
+        _stop(patches)
+
+
+async def test_external_change_right_after_a_write_is_not_dropped(hass) -> None:
+    """HA turns it off, the vendor app turns it on, HA is asked for off again."""
+    cloud = _Cloud(2.0)
+    patches = await _setup(hass, cloud)
+    try:
+        await _call(hass, "turn_off")
+        cloud.mode = 2.0  # changed in the app, seconds later
+        await _call(hass, "turn_off")
+        assert len(cloud.writes) == 2
+        assert cloud.mode == 0.0
+        assert hass.states.get(SWITCH).state == "off"
+    finally:
+        _stop(patches)

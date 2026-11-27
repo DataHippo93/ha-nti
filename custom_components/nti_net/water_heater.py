@@ -162,4 +162,7 @@ class NtiNetWaterHeater(NtiNetEntity, WaterHeaterEntity):
             )
         except NtiNetError as err:
             raise HomeAssistantError(f"Could not set hot water mode: {err}") from err
+        # Shared with the hot water switch, so neither entity acts on a mode
+        # the other has just changed.
+        self.coordinator.note_dhw_write(self._plant_id, new_mode)
         await self.coordinator.async_request_refresh()

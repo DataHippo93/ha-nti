@@ -147,20 +147,24 @@ class NtiNetHotWaterSwitch(NtiNetEntity, SwitchEntity):
             ) from err
 
         recent = self.coordinator.recent_dhw_write(self._plant_id, RECENT_WRITE_SECONDS)
-        if recent is not None and recent != current:
-            # The gateway can keep answering the previous mode for a while
-            # after a write.  A mode the cloud acknowledged moments ago is
-            # better evidence than a read that disagrees with it.
-            current = recent
-
-        if current == new_mode:
-            # Already there (changed elsewhere, perhaps): just show the truth.
-            self._show(current)
-            return
+        if recent is None or recent == current:
+            if current == new_mode:
+                # Already there (changed elsewhere, perhaps): show the truth.
+                self._show(current)
+                return
+            old = current
+        else:
+            # The fresh read and a write the cloud acknowledged moments ago
+            # disagree.  Either the read is lagging or the mode really was
+            # changed since; there is no telling which.  So the command is
+            # never skipped here: the write is idempotent, and one redundant
+            # request is cheaper than a dropped command.  ``old`` is whichever
+            # of the two differs from the target.
+            old = recent if recent != new_mode else current
 
         try:
             await self.coordinator.client.async_set_dhw_mode(
-                self._plant_id, new=new_mode, old=current
+                self._plant_id, new=new_mode, old=old
             )
         except NtiNetError as err:
             # The write may or may not have been applied (a timeout after the
