@@ -1,9 +1,12 @@
 """Sensor platform for the NTI net integration.
 
 Every reading here maps to a field that the live ``remote/plantData/{gw}``
-payload actually returns.  Values are Celsius because the client pins
-``umsys=si``; the payload carries no pressure, flow or setpoint readings on a
-standard boiler gateway, so none are invented.
+payload actually returns, or to a named data item / service-menu value that a
+boiler gateway answers (flow, return, pressure, signal).  Values are Celsius
+and bar because the client pins ``umsys=si``.
+
+The fault sensor is the odd one out: its state is the active fault code, or
+``OK``, and the full fault list rides along as attributes.
 """
 
 from __future__ import annotations
@@ -16,7 +19,14 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy, UnitOfTemperature, UnitOfVolume
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfEnergy,
+    UnitOfPressure,
+    UnitOfTemperature,
+    UnitOfVolume,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -24,6 +34,7 @@ from .const import (
     CONF_GAS_KWH_PER_M3,
     CONF_GAS_UNIT,
     DEFAULT_GAS_KWH_PER_M3,
+    FAULT_STATE_OK,
     GAS_UNIT_KWH,
     GAS_UNIT_M3,
 )
@@ -57,7 +68,53 @@ PLANT_SENSORS: tuple[SensorEntityDescription, ...] = (
     ),
 )
 
+#: Service readings.  They exist on the generic (non-BSB) view only.
+DIAGNOSTIC_SENSORS: tuple[SensorEntityDescription, ...] = (
+    SensorEntityDescription(
+        key="flow_temperature",
+        translation_key="flow_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="flow_setpoint",
+        translation_key="flow_setpoint",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="return_temperature",
+        translation_key="return_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
+        key="heating_pressure",
+        translation_key="heating_pressure",
+        device_class=SensorDeviceClass.PRESSURE,
+        native_unit_of_measurement=UnitOfPressure.BAR,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SensorEntityDescription(
+        key="signal_level",
+        translation_key="signal_level",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:wifi",
+    ),
+)
+
 PLANT_ATTRIBUTE_MAP: dict[str, str] = {
+    "flow_temperature": "flow_temp",
+    "flow_setpoint": "flow_setpoint",
+    "return_temperature": "return_temp",
+    "heating_pressure": "pressure",
+    "signal_level": "signal_level",
     "outside_temperature": "outside_temp",
     "dhw_temperature": "dhw_temp",
     "dhw_reduced_temperature": "dhw_reduced_temp",
@@ -139,8 +196,12 @@ async def async_setup_entry(
     kwh_per_m3 = float(
         entry.options.get(CONF_GAS_KWH_PER_M3, DEFAULT_GAS_KWH_PER_M3)
     )
-    entities: list[NtiNetSensor] = []
+    entities: list[SensorEntity] = []
     for plant in coordinator.data.values():
+        if "bsb" not in plant.raw:
+            entities.append(NtiNetFaultSensor(coordinator, plant))
+            for description in DIAGNOSTIC_SENSORS:
+                entities.append(NtiNetSensor(coordinator, plant, description))
         for description in PLANT_SENSORS:
             if description.key in DHW_SENSOR_KEYS and not plant.has_dhw:
                 continue
@@ -193,3 +254,45 @@ class NtiNetSensor(NtiNetEntity, SensorEntity):
         # Round back to the precision the cloud reports, so the derived volume
         # does not imply more accuracy than the source has.
         return round(value * self._factor, 3)
+
+
+class NtiNetFaultSensor(NtiNetEntity, SensorEntity):
+    """The fault the appliance is reporting right now.
+
+    The state is the code of the first active fault, or ``OK``.  It is
+    ``unknown`` when the fault list could not be read, never ``OK``: a failed
+    read must not look like a healthy boiler.  The cloud keeps no history, so
+    this sensor's own history in Home Assistant is the fault log.
+    """
+
+    _attr_translation_key = "fault"
+    _attr_icon = "mdi:alert-circle-outline"
+
+    def __init__(self, coordinator: NtiNetCoordinator, plant: NtiNetPlant) -> None:
+        """Initialise the fault sensor."""
+        super().__init__(coordinator, plant, "fault")
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the active fault code, ``OK``, or None when unknown."""
+        plant = self.plant
+        if plant is None or plant.faults is None:
+            return None
+        if not plant.faults:
+            return FAULT_STATE_OK
+        first = plant.faults[0]
+        return first.get("code") or first.get("description") or "fault"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose every active fault with its description and raw payload."""
+        plant = self.plant
+        if plant is None or plant.faults is None:
+            return {}
+        first = plant.faults[0] if plant.faults else {}
+        return {
+            "count": len(plant.faults),
+            "description": first.get("description"),
+            "blocking": first.get("blocking"),
+            "faults": plant.faults,
+        }

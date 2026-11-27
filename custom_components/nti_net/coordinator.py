@@ -57,10 +57,18 @@ from homeassistant.util import dt as dt_util
 
 from .api import NtiNetApiClient, NtiNetAuthError, NtiNetError, NtiNetRateLimitError
 from .const import (
+    DATA_ITEM_AUTO_THERMOREG,
+    DATA_ITEM_FLOW_SETPOINT,
+    DATA_ITEM_FLOW_TEMP,
+    DATA_ITEM_PRESSURE,
     DEFAULT_SCAN_INTERVAL,
+    DIAGNOSTIC_DATA_ITEMS,
+    DIAGNOSTIC_MENU_ITEMS,
     DOMAIN,
     GAS_USAGE_DHW,
     GAS_USAGE_HEATING,
+    MENU_ITEM_RETURN_TEMP,
+    MENU_ITEM_SIGNAL_LEVEL,
     MIN_SCAN_INTERVAL,
     SEQUENCE_PERIOD_DAILY,
     SEQUENCE_PERIOD_MONTHLY,
@@ -157,10 +165,34 @@ class NtiNetPlant:
     gas_this_month_heating: float | None = None
     gas_this_month_dhw: float | None = None
     gas_yesterday: float | None = None
+    # Diagnostics read from the data-item and service-menu routes
+    flow_temp: float | None = None
+    flow_setpoint: float | None = None
+    return_temp: float | None = None
+    pressure: float | None = None
+    signal_level: float | None = None
+    auto_thermoreg: bool | None = None
+    #: Active faults.  ``None`` means "could not be read", which is not the
+    #: same as an empty list ("read fine, nothing wrong").
+    faults: list[dict[str, Any]] | None = None
     # Children
     zones: dict[int, NtiNetZone] = field(default_factory=dict)
     features: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def has_fault(self) -> bool | None:
+        """Return whether a fault is active, or None when that is unknown."""
+        if self.faults is None:
+            return None
+        return bool(self.faults)
+
+    @property
+    def blocking_fault(self) -> bool | None:
+        """Return whether an active fault is a lockout that needs a reset."""
+        if self.faults is None:
+            return None
+        return any(fault.get("blocking") is True for fault in self.faults)
 
     @property
     def has_metering(self) -> bool:
@@ -287,7 +319,64 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
 
         plant.raw = data
         self._apply_plant(plant, data)
+        await self._async_apply_diagnostics(plant)
         await self._async_apply_consumption(plant)
+
+    async def _async_apply_diagnostics(self, plant: NtiNetPlant) -> None:
+        """Read the faults and the service readings for one gateway.
+
+        These are three extra requests on top of the main read.  Each is
+        independent and none may fail the poll: a gateway that does not answer
+        one of them still has a perfectly usable climate entity.  Throttling
+        is the exception -- it is re-raised so the whole poll backs off rather
+        than adding more requests to an account that is already blocked.
+
+        A fault read that fails leaves ``faults`` as ``None`` so the fault
+        sensors report "unknown".  Reporting "ok" there would hide the very
+        thing these sensors exist to catch.
+        """
+        gateway_id = plant.gateway_id
+
+        try:
+            plant.faults = [
+                _parse_fault(entry)
+                for entry in await self.client.async_get_bus_errors(gateway_id)
+            ]
+        except NtiNetRateLimitError:
+            raise
+        except NtiNetError as err:
+            _LOGGER.debug("No fault data for %s: %s", gateway_id, err)
+            plant.faults = None
+
+        try:
+            items = await self.client.async_get_data_items(
+                gateway_id,
+                [{"id": name, "zn": 0} for name in DIAGNOSTIC_DATA_ITEMS],
+                plant.features,
+            )
+        except NtiNetRateLimitError:
+            raise
+        except NtiNetError as err:
+            _LOGGER.debug("No data items for %s: %s", gateway_id, err)
+            items = []
+        values = _item_values(items, "id")
+        plant.flow_setpoint = _as_float(values.get(DATA_ITEM_FLOW_SETPOINT))
+        plant.flow_temp = _as_float(values.get(DATA_ITEM_FLOW_TEMP))
+        plant.pressure = _as_float(values.get(DATA_ITEM_PRESSURE))
+        plant.auto_thermoreg = _as_bool(values.get(DATA_ITEM_AUTO_THERMOREG))
+
+        try:
+            menu = await self.client.async_get_menu_items(
+                gateway_id, DIAGNOSTIC_MENU_ITEMS
+            )
+        except NtiNetRateLimitError:
+            raise
+        except NtiNetError as err:
+            _LOGGER.debug("No menu items for %s: %s", gateway_id, err)
+            menu = []
+        menu_values = _item_values(menu, "id")
+        plant.return_temp = _as_float(menu_values.get(MENU_ITEM_RETURN_TEMP))
+        plant.signal_level = _as_float(menu_values.get(MENU_ITEM_SIGNAL_LEVEL))
 
     async def _async_apply_consumption(self, plant: NtiNetPlant) -> None:
         """Fill in the metered gas readings, if this gateway meters.
@@ -467,6 +556,53 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
             zone.room_temp = room
 
         plant.zones[number] = zone
+
+
+def _item_values(items: list[dict[str, Any]], key: str) -> dict[Any, Any]:
+    """Index data-item or menu-item answers by id, skipping unusable ones.
+
+    Both routes flag a reading they could not take with ``error`` (and the
+    data-item route also with ``invalid``); such a value is dropped so the
+    sensor reports "unknown" instead of a stale or meaningless number.
+    """
+    result: dict[Any, Any] = {}
+    for item in items:
+        if item.get("error") is True or item.get("invalid") is True:
+            continue
+        identifier = item.get(key)
+        if identifier is None or "value" not in item:
+            continue
+        result[identifier] = item["value"]
+    return result
+
+
+def _parse_fault(entry: dict[str, Any]) -> dict[str, Any]:
+    """Normalise one ``busErrors`` entry.
+
+    The route was only ever observed empty on the reference gateway, so the
+    field names are taken from the shared Ariston/remotethermo payload
+    (``code``, ``fault``, ``errDex``, ``blk``, ``res``, ``timestamp``) and read
+    defensively.  The untouched entry is kept under ``raw`` so that a field
+    this guess misses is still visible on the sensor the first time a real
+    fault arrives.
+    """
+    code = entry.get("code")
+    if code in (None, ""):
+        code = entry.get("fault")
+    description = (
+        entry.get("errDex")
+        or entry.get("description")
+        or entry.get("text")
+        or entry.get("message")
+    )
+    return {
+        "code": str(code) if code not in (None, "") else None,
+        "description": _as_str(description),
+        "blocking": _as_bool(entry.get("blk")),
+        "reset": _as_str(entry.get("res")),
+        "timestamp": _as_str(entry.get("timestamp")),
+        "raw": entry,
+    }
 
 
 def _parse_consumption(

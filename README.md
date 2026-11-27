@@ -232,3 +232,19 @@ change without notice.
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
+
+
+## Fork additions (DataHippo93/ha-nti)
+
+This fork adds read-only fault and service entities per gateway:
+
+- **Fault code** sensor: the active fault code, or `OK`. Attributes carry the
+  description, whether it is a lockout, and the raw cloud entry. It reads
+  `unknown`, never `OK`, when the fault list cannot be fetched.
+- **Fault** binary sensor (problem class), for alerts.
+- **Flow temperature**, **Flow setpoint**, **Return temperature**,
+  **Heating circuit pressure** and **Gateway signal level** sensors.
+- **Automatic thermoregulation** binary sensor.
+
+The cloud keeps no fault history, so the Fault code sensor's history in Home
+Assistant is the log. These cost three extra requests per poll.

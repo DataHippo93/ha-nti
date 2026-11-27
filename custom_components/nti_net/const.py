@@ -143,3 +143,25 @@ class DhwMode:
         ALWAYS_ACTIVE: "comfort",
     }
     VALUES: Final = {name: value for value, name in NAMES.items()}
+
+
+#: Named data items read on every poll for the diagnostic sensors.  All four
+#: are answered by a boiler gateway of ``gwSysType`` 3; see PROTOCOL.md.
+DATA_ITEM_FLOW_SETPOINT: Final = "ChFlowSetpointTemp"
+DATA_ITEM_FLOW_TEMP: Final = "ChFlowTemp"
+DATA_ITEM_PRESSURE: Final = "HeatingCircuitPressure"
+DATA_ITEM_AUTO_THERMOREG: Final = "AutomaticThermoregulation"
+DIAGNOSTIC_DATA_ITEMS: Final = (
+    DATA_ITEM_FLOW_SETPOINT,
+    DATA_ITEM_FLOW_TEMP,
+    DATA_ITEM_PRESSURE,
+    DATA_ITEM_AUTO_THERMOREG,
+)
+
+#: Service-menu ids read alongside them.
+MENU_ITEM_RETURN_TEMP: Final = 124
+MENU_ITEM_SIGNAL_LEVEL: Final = 119
+DIAGNOSTIC_MENU_ITEMS: Final = (MENU_ITEM_RETURN_TEMP, MENU_ITEM_SIGNAL_LEVEL)
+
+#: State of the fault sensor while the appliance reports nothing wrong.
+FAULT_STATE_OK: Final = "OK"

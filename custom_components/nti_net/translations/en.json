@@ -119,6 +119,12 @@
       },
       "zone_override": {
         "name": "Override"
+      },
+      "fault": {
+        "name": "Fault"
+      },
+      "auto_thermoreg": {
+        "name": "Automatic thermoregulation"
       }
     },
     "sensor": {
@@ -145,6 +151,24 @@
       },
       "gas_dhw_last_month": {
         "name": "Gas hot water last month"
+      },
+      "fault": {
+        "name": "Fault code"
+      },
+      "flow_temperature": {
+        "name": "Flow temperature"
+      },
+      "flow_setpoint": {
+        "name": "Flow setpoint"
+      },
+      "return_temperature": {
+        "name": "Return temperature"
+      },
+      "heating_pressure": {
+        "name": "Heating circuit pressure"
+      },
+      "signal_level": {
+        "name": "Gateway signal level"
       }
     },
     "select": {
