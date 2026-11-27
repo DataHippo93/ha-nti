@@ -351,3 +351,127 @@ async def test_dhw_mode_write_without_ack_raises(answer: Any) -> None:
     """A write the cloud did not acknowledge must not look applied."""
     with pytest.raises(NtiNetError):
         await _real_client(answer).async_set_dhw_mode("TEST", new=0, old=2)
+
+
+# ---------------------------------------------------------------------------
+# Second review round.
+# ---------------------------------------------------------------------------
+def test_bsb_mode_is_trusted() -> None:
+    """A BSB plant reports its mode directly; it must stay trusted."""
+    from custom_components.nti_net.coordinator import NtiNetPlant
+
+    plant = NtiNetPlant(gateway_id="B", name="BSB", raw={"bsb": {"dhwMode": 2}})
+    plant.dhw_mode = 2
+    assert plant.dhw_mode_trusted is True
+    assert plant.is_combi_dhw is False
+
+
+async def test_bsb_water_heater_keeps_its_state_and_mode_write(hass) -> None:
+    """Regression: the combi guard must not blank a BSB water heater."""
+    cloud = _Cloud(None)
+    entry = MockConfigEntry(
+        domain="nti_net",
+        data={"username": "user@example.com", "password": "secret"},
+        unique_id="user@example.com",
+    )
+    entry.add_to_hass(hass)
+    client = "custom_components.nti_net.api.NtiNetApiClient"
+    bsb = {"mode": 1, "outTemp": 5.0, "flame": True, "dhwTemp": 50.0,
+           "dhwComfTemp": 55.0, "dhwMode": 2, "zones": []}
+    with (
+        patch(f"{client}.async_login", AsyncMock(return_value=True)),
+        patch(f"{client}.async_get_plants", AsyncMock(return_value=[{"gwId": "TEST", "plantName": "Boiler"}])),
+        patch(f"{client}.async_get_features", AsyncMock(return_value={})),
+        patch(f"{client}.async_get_gateway_info", AsyncMock(return_value={"isOnline": True})),
+        patch(f"{client}.async_get_plant_data", AsyncMock(return_value={})),
+        patch(f"{client}.async_get_bsb_plant_data", AsyncMock(return_value=bsb)),
+        patch(f"{client}.async_set_dhw_mode", AsyncMock(side_effect=cloud.set_mode)),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert hass.states.get(SWITCH) is None
+        assert hass.states.get("water_heater.boiler_hot_water").state == "comfort"
+        await hass.services.async_call(
+            "water_heater",
+            "set_operation_mode",
+            {"entity_id": "water_heater.boiler_hot_water", "operation_mode": "off"},
+            blocking=True,
+        )
+        assert cloud.writes == [(0, 2)]
+
+
+def test_no_combi_verdict_without_a_detail_read() -> None:
+    """A plant whose detail read failed must not be taken for a combi."""
+    from custom_components.nti_net.coordinator import NtiNetPlant
+
+    assert NtiNetPlant(gateway_id="X", name="Unknown").is_combi_dhw is False
+
+
+async def test_poll_in_flight_does_not_put_the_old_mode_back() -> None:
+    """A write acknowledged while a poll's read is in flight wins."""
+    client = FakeClient(items=_items(2.0), menu=MENU_ITEMS)
+    coordinator = _coordinator(client)
+    original = client.async_get_data_items
+
+    async def read_then_write(gateway_id, items, features):
+        answer = await original(gateway_id, items, features)  # read sees 2
+        coordinator.note_dhw_write("TEST", 0)                 # then off is acked
+        return answer
+
+    client.async_get_data_items = read_then_write
+    plant = _plant()
+    plant.allowed_dhw_modes = []
+    await coordinator._async_apply_diagnostics(plant)
+    assert plant.dhw_mode_item == 0
+    assert plant.dhw_mode == 0
+
+    # A later, ordinary poll reads the boiler normally again.
+    client.async_get_data_items = original
+    client._items = _items(0.0)
+    later = _plant()
+    await coordinator._async_apply_diagnostics(later)
+    assert later.dhw_mode_item == 0
+
+
+async def test_opposite_command_during_a_long_read_lag_is_not_dropped(hass) -> None:
+    """Off is applied but reads keep saying on; on must still be sent."""
+    cloud = _Cloud(2.0, lag=5)
+    patches = await _setup(hass, cloud)
+    try:
+        with pytest.raises(HomeAssistantError):
+            await _call(hass, "turn_off")  # applied, but not confirmed in time
+        assert cloud.writes == [(DhwMode.DISABLED, 2)]
+
+        # The pre-read still says 2.  The acknowledged 0 outranks it.
+        cloud.lag = 0
+        cloud._stale_reads = 1
+        await _call(hass, "turn_on")
+        assert cloud.writes[-1] == (DhwMode.ALWAYS_ACTIVE, 0)
+        assert cloud.mode == 2.0
+        assert hass.states.get(SWITCH).state == "on"
+    finally:
+        _stop(patches)
+
+
+async def test_write_lost_in_transit_shows_what_the_boiler_says(hass) -> None:
+    """The write times out after the boiler applied it."""
+    from custom_components.nti_net.api import NtiNetConnectionError
+
+    cloud = _Cloud(2.0)
+    patches = await _setup(hass, cloud)
+    try:
+        original = cloud.set_mode
+
+        async def applied_then_timeout(gateway_id, new, old=None):
+            await original(gateway_id, new, old)
+            raise NtiNetConnectionError("Request timed out")
+
+        with patch(
+            "custom_components.nti_net.api.NtiNetApiClient.async_set_dhw_mode",
+            AsyncMock(side_effect=applied_then_timeout),
+        ):
+            with pytest.raises(HomeAssistantError):
+                await _call(hass, "turn_off")
+        assert hass.states.get(SWITCH).state == "off"  # the truth, not the old "on"
+    finally:
+        _stop(patches)

@@ -257,6 +257,8 @@ heating and hot water entities keep working.
   change made at the boiler or in the NTI app is never overwritten by a stale
   value and a command is never silently dropped. The write must be
   acknowledged, and is then confirmed by reading the boiler again. The switch
-  reads `unknown` when the mode cannot be read.
+  reads `unknown` when the mode cannot be read. Use `turn_on` / `turn_off`
+  in automations, not `toggle`: Home Assistant treats a toggle on an unknown
+  switch as "turn on".
 - On a combi the water heater entity now shows the real mode. The aggregated
   read reports mode 0 there whatever the boiler is doing.

@@ -205,6 +205,9 @@ class NtiNetPlant:
         aggregated read.  There the mode is only real when the ``DhwMode``
         data item was read this poll.
         """
+        if "bsb" in self.raw:
+            # The BSB view reports the mode directly and has no data items.
+            return True
         return bool(self.allowed_dhw_modes) or self.dhw_mode_item is not None
 
     @property
@@ -215,6 +218,10 @@ class NtiNetPlant:
         (a combi without a cylinder) and that does not hide hot water.
         """
         if "bsb" in self.raw or self.allowed_dhw_modes:
+            return False
+        if not self.raw or self.dhw_mode is None:
+            # The detail read failed, so the shape of this appliance is not
+            # known.  An empty option list here proves nothing.
             return False
         if not self.dhw_mode_changeable:
             return False
@@ -279,6 +286,7 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
         self.client = client
         self._consumption_cache: dict[str, dict[str, float | None]] = {}
         self._diagnostics_blocked_until: dict[str, float] = {}
+        self._dhw_writes: dict[str, tuple[float, int]] = {}
         self._fault_read_failing: set[str] = set()
         self._consumption_fetched_at: dict[str, float] = {}
 
@@ -366,6 +374,17 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
         await self._async_apply_diagnostics(plant)
         await self._async_apply_consumption(plant)
 
+    def note_dhw_write(self, gateway_id: str, mode: int) -> None:
+        """Record a hot water mode the cloud has just acknowledged."""
+        _state(self, "_dhw_writes", dict)[gateway_id] = (time.monotonic(), mode)
+
+    def recent_dhw_write(self, gateway_id: str, within: float) -> int | None:
+        """Return the mode acknowledged in the last ``within`` seconds, if any."""
+        entry = _state(self, "_dhw_writes", dict).get(gateway_id)
+        if entry is None or time.monotonic() - entry[0] > within:
+            return None
+        return entry[1]
+
     async def _async_apply_diagnostics(self, plant: NtiNetPlant) -> None:
         """Read the faults and the service readings for one gateway.
 
@@ -411,6 +430,7 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
                     err,
                 )
 
+        items_requested_at = time.monotonic()
         try:
             items = await self.client.async_get_data_items(
                 gateway_id,
@@ -429,6 +449,12 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
         plant.pressure = _as_float(values.get(DATA_ITEM_PRESSURE))
         plant.auto_thermoreg = _as_bool(values.get(DATA_ITEM_AUTO_THERMOREG))
         plant.dhw_mode_item = _as_int(values.get(DATA_ITEM_DHW_MODE))
+        written = _state(self, "_dhw_writes", dict).get(gateway_id)
+        if written is not None and written[0] >= items_requested_at:
+            # A mode was written and acknowledged after this read was sent,
+            # so what the read brought back predates it.  Keep the written
+            # mode rather than putting the old one back until the next poll.
+            plant.dhw_mode_item = written[1]
         if plant.dhw_mode_item is not None and not plant.allowed_dhw_modes:
             # The aggregated read gave no usable mode (a combi reports an
             # empty option list and a constant 0), so the data item wins.

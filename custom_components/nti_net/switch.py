@@ -38,6 +38,10 @@ PARALLEL_UPDATES = 1
 #: within one settle delay; a second look covers a slow one.
 CONFIRM_ATTEMPTS = 2
 
+#: For this long after an acknowledged write, that write outranks a read
+#: that still shows the previous mode.
+RECENT_WRITE_SECONDS = 60
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -142,6 +146,13 @@ class NtiNetHotWaterSwitch(NtiNetEntity, SwitchEntity):
                 f"changed: {err}"
             ) from err
 
+        recent = self.coordinator.recent_dhw_write(self._plant_id, RECENT_WRITE_SECONDS)
+        if recent is not None and recent != current:
+            # The gateway can keep answering the previous mode for a while
+            # after a write.  A mode the cloud acknowledged moments ago is
+            # better evidence than a read that disagrees with it.
+            current = recent
+
         if current == new_mode:
             # Already there (changed elsewhere, perhaps): just show the truth.
             self._show(current)
@@ -152,8 +163,15 @@ class NtiNetHotWaterSwitch(NtiNetEntity, SwitchEntity):
                 self._plant_id, new=new_mode, old=current
             )
         except NtiNetError as err:
-            self._show(current)
+            # The write may or may not have been applied (a timeout after the
+            # boiler took it, say), so the old mode cannot be shown as fact.
+            # Ask the boiler; if it will not say, the state is unknown.
+            try:
+                self._show(await self._async_read_mode())
+            except NtiNetError:
+                self._show(None)
             raise HomeAssistantError(f"Could not switch hot water: {err}") from err
+        self.coordinator.note_dhw_write(self._plant_id, new_mode)
 
         # Acknowledged.  Show it now, then confirm from the appliance, which
         # takes a few seconds to reflect a write.
