@@ -15,7 +15,7 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.nti_net.api import NtiNetError
+from custom_components.nti_net.api import NtiNetError, NtiNetRateLimitError
 from custom_components.nti_net.const import DhwMode
 
 from test_faults import DATA_ITEMS, FEATURES, MENU_ITEMS, PLANT_DATA, FakeClient
@@ -60,24 +60,42 @@ async def test_missing_item_leaves_the_mode_unknown() -> None:
 
 
 class _Cloud:
-    """A stubbed cloud whose DHW mode can be written and read back."""
+    """A stubbed cloud whose DHW mode can be written and read back.
 
-    def __init__(self, mode: Any) -> None:
+    ``lag`` is how many reads after a write still answer the old mode, which
+    is what the real gateway does for a few seconds.
+    """
+
+    def __init__(self, mode: Any, lag: int = 0) -> None:
         self.mode = mode
+        self.lag = lag
+        self._stale: Any = None
+        self._stale_reads = 0
         self.writes: list[tuple[int, Any]] = []
+        self.reads = 0
         self.fail_write: Exception | None = None
+        self.fail_reads: Exception | None = None
+        self.apply_writes = True
 
     async def data_items(self, gateway_id: str, items: Any, features: Any) -> Any:
+        self.reads += 1
+        if self.fail_reads is not None:
+            raise self.fail_reads
+        if self._stale_reads > 0:
+            self._stale_reads -= 1
+            return _items(self._stale)
         return _items(self.mode)
 
     async def set_mode(self, gateway_id: str, new: int, old: Any = None) -> None:
         if self.fail_write is not None:
             raise self.fail_write
         self.writes.append((new, old))
-        self.mode = float(new)
+        if self.apply_writes:
+            self._stale, self._stale_reads = self.mode, self.lag
+            self.mode = float(new)
 
 
-async def _setup(hass, cloud: _Cloud):
+async def _setup(hass, cloud: _Cloud, features: dict | None = None, plant_data: dict | None = None):
     entry = MockConfigEntry(
         domain="nti_net",
         data={"username": "user@example.com", "password": "secret"},
@@ -91,9 +109,9 @@ async def _setup(hass, cloud: _Cloud):
             f"{client}.async_get_plants",
             AsyncMock(return_value=[{"gwId": "TEST", "plantName": "Boiler", "gwSysType": 3}]),
         ),
-        patch(f"{client}.async_get_features", AsyncMock(return_value=FEATURES)),
+        patch(f"{client}.async_get_features", AsyncMock(return_value=features or FEATURES)),
         patch(f"{client}.async_get_gateway_info", AsyncMock(return_value={"isOnline": True})),
-        patch(f"{client}.async_get_plant_data", AsyncMock(return_value=PLANT_DATA)),
+        patch(f"{client}.async_get_plant_data", AsyncMock(return_value=plant_data or PLANT_DATA)),
         patch(f"{client}.async_get_bus_errors", AsyncMock(return_value=[])),
         patch(f"{client}.async_get_data_items", AsyncMock(side_effect=cloud.data_items)),
         patch(f"{client}.async_get_menu_items", AsyncMock(return_value=MENU_ITEMS)),
@@ -112,6 +130,11 @@ def _stop(patches) -> None:
         item.stop()
 
 
+async def _call(hass, service: str) -> None:
+    await hass.services.async_call("switch", service, {"entity_id": SWITCH}, blocking=True)
+    await hass.async_block_till_done()
+
+
 async def test_switch_reflects_the_real_mode_and_fixes_the_water_heater(hass) -> None:
     patches = await _setup(hass, _Cloud(2.0))
     try:
@@ -128,19 +151,74 @@ async def test_switch_off_and_on_round_trip(hass) -> None:
     cloud = _Cloud(2.0)
     patches = await _setup(hass, cloud)
     try:
-        await hass.services.async_call("switch", "turn_off", {"entity_id": SWITCH}, blocking=True)
-        await hass.async_block_till_done()
+        await _call(hass, "turn_off")
         assert cloud.writes == [(DhwMode.DISABLED, 2)]
         assert hass.states.get(SWITCH).state == "off"
 
-        await hass.services.async_call("switch", "turn_on", {"entity_id": SWITCH}, blocking=True)
-        await hass.async_block_till_done()
+        await _call(hass, "turn_on")
         assert cloud.writes[-1] == (DhwMode.ALWAYS_ACTIVE, 0)
         assert hass.states.get(SWITCH).state == "on"
 
         # Already on: no write at all.
-        await hass.services.async_call("switch", "turn_on", {"entity_id": SWITCH}, blocking=True)
+        await _call(hass, "turn_on")
         assert len(cloud.writes) == 2
+    finally:
+        _stop(patches)
+
+
+async def test_command_is_not_dropped_when_held_state_is_stale(hass) -> None:
+    """Hot water was turned off at the boiler; HA still believes it is on.
+
+    turn_on must not be a no-op just because the held state says "on".
+    """
+    cloud = _Cloud(2.0)
+    patches = await _setup(hass, cloud)
+    try:
+        assert hass.states.get(SWITCH).state == "on"
+        cloud.mode = 0.0  # changed out of band, HA has not polled yet
+
+        await _call(hass, "turn_on")
+        # The fresh read saw 0, so the write went out with the true old value.
+        assert cloud.writes == [(DhwMode.ALWAYS_ACTIVE, 0)]
+        assert hass.states.get(SWITCH).state == "on"
+    finally:
+        _stop(patches)
+
+
+async def test_stale_state_is_corrected_without_a_needless_write(hass) -> None:
+    """HA believes "on", the boiler is already off, the user asks for off."""
+    cloud = _Cloud(2.0)
+    patches = await _setup(hass, cloud)
+    try:
+        cloud.mode = 0.0
+        await _call(hass, "turn_off")
+        assert cloud.writes == []
+        assert hass.states.get(SWITCH).state == "off"
+    finally:
+        _stop(patches)
+
+
+async def test_lagging_gateway_is_confirmed_on_the_second_read(hass) -> None:
+    cloud = _Cloud(2.0, lag=1)
+    patches = await _setup(hass, cloud)
+    try:
+        await _call(hass, "turn_off")
+        assert cloud.writes == [(DhwMode.DISABLED, 2)]
+        assert hass.states.get(SWITCH).state == "off"
+    finally:
+        _stop(patches)
+
+
+async def test_write_that_never_takes_effect_is_reported(hass) -> None:
+    """Acknowledged but the boiler keeps the old mode: error, true state."""
+    cloud = _Cloud(2.0)
+    cloud.apply_writes = False
+    patches = await _setup(hass, cloud)
+    try:
+        with pytest.raises(HomeAssistantError):
+            await _call(hass, "turn_off")
+        assert cloud.writes == [(DhwMode.DISABLED, 2)]
+        assert hass.states.get(SWITCH).state == "on"
     finally:
         _stop(patches)
 
@@ -155,15 +233,41 @@ async def test_time_based_mode_counts_as_on(hass) -> None:
         _stop(patches)
 
 
-async def test_unknown_mode_is_unknown_and_refuses_to_write(hass) -> None:
-    """Without a known current mode the switch must not guess or write."""
+async def test_unreadable_mode_is_unknown_and_refuses_to_write(hass) -> None:
+    """Without a readable current mode nothing is written."""
     cloud = _Cloud(None)
     patches = await _setup(hass, cloud)
     try:
         assert hass.states.get(SWITCH).state == "unknown"
+        # On a combi the water heater must not claim "off" either.
+        assert hass.states.get("water_heater.boiler_hot_water").state == "unknown"
         with pytest.raises(HomeAssistantError):
-            await hass.services.async_call("switch", "turn_off", {"entity_id": SWITCH}, blocking=True)
+            await _call(hass, "turn_off")
         assert cloud.writes == []
+        with pytest.raises(HomeAssistantError):
+            await hass.services.async_call(
+                "water_heater",
+                "set_operation_mode",
+                {"entity_id": "water_heater.boiler_hot_water", "operation_mode": "off"},
+                blocking=True,
+            )
+        assert cloud.writes == []
+    finally:
+        _stop(patches)
+
+
+@pytest.mark.parametrize(
+    "failure", [NtiNetError("500"), NtiNetRateLimitError("blocked for 60 seconds", 60)]
+)
+async def test_failed_pre_read_changes_nothing(hass, failure) -> None:
+    cloud = _Cloud(2.0)
+    patches = await _setup(hass, cloud)
+    try:
+        cloud.fail_reads = failure
+        with pytest.raises(HomeAssistantError):
+            await _call(hass, "turn_off")
+        assert cloud.writes == []
+        assert hass.states.get(SWITCH).state == "on"
     finally:
         _stop(patches)
 
@@ -174,7 +278,76 @@ async def test_failed_write_leaves_the_switch_unchanged(hass) -> None:
     patches = await _setup(hass, cloud)
     try:
         with pytest.raises(HomeAssistantError):
-            await hass.services.async_call("switch", "turn_off", {"entity_id": SWITCH}, blocking=True)
+            await _call(hass, "turn_off")
         assert hass.states.get(SWITCH).state == "on"
     finally:
         _stop(patches)
+
+
+async def test_unconfirmable_write_reads_unknown(hass) -> None:
+    """Write acknowledged, then every confirming read fails: never a guess."""
+    cloud = _Cloud(2.0)
+    patches = await _setup(hass, cloud)
+    try:
+        original = cloud.set_mode
+
+        async def write_then_break(gateway_id, new, old=None):
+            await original(gateway_id, new, old)
+            cloud.fail_reads = NtiNetError("timeout")
+
+        with patch(
+            "custom_components.nti_net.api.NtiNetApiClient.async_set_dhw_mode",
+            AsyncMock(side_effect=write_then_break),
+        ):
+            with pytest.raises(HomeAssistantError):
+                await _call(hass, "turn_off")
+        assert cloud.writes == [(DhwMode.DISABLED, 2)]
+        assert hass.states.get(SWITCH).state == "unknown"
+    finally:
+        _stop(patches)
+
+
+async def test_no_switch_on_a_cylinder_appliance(hass) -> None:
+    """An appliance that advertises its own DHW modes keeps the water heater only."""
+    data = dict(PLANT_DATA)
+    data["dMod"] = {"allowedOptions": [0, 1, 2], "value": 1}
+    data["dhwBoiler"] = True
+    patches = await _setup(hass, _Cloud(1.0), plant_data=data)
+    try:
+        assert hass.states.get(SWITCH) is None
+        assert hass.states.get("water_heater.boiler_hot_water").state == "eco"
+    finally:
+        _stop(patches)
+
+
+@pytest.mark.parametrize("flag", [{"dhwBoilerPresent": False}, {"dhwHidden": True}])
+async def test_no_switch_when_hot_water_is_absent_or_hidden(hass, flag) -> None:
+    features = dict(FEATURES, **flag)
+    patches = await _setup(hass, _Cloud(2.0), features=features)
+    try:
+        assert hass.states.get(SWITCH) is None
+    finally:
+        _stop(patches)
+
+
+def _real_client(answer: Any):
+    from custom_components.nti_net.api import NtiNetApiClient
+
+    client = NtiNetApiClient(session=None, username="u", password="p")
+    client._raw_request = AsyncMock(return_value=answer)
+    return client
+
+
+async def test_dhw_mode_write_request_and_ack() -> None:
+    client = _real_client({"success": True})
+    await client.async_set_dhw_mode("TEST", new=0, old=2)
+    args, kwargs = client._raw_request.call_args
+    assert args == ("POST", "remote/plantData/TEST/dhwMode")
+    assert kwargs["body"] == {"new": 0, "old": 2}
+
+
+@pytest.mark.parametrize("answer", [None, {"success": False}, {}, "ok", []])
+async def test_dhw_mode_write_without_ack_raises(answer: Any) -> None:
+    """A write the cloud did not acknowledge must not look applied."""
+    with pytest.raises(NtiNetError):
+        await _real_client(answer).async_set_dhw_mode("TEST", new=0, old=2)

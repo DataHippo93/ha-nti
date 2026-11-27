@@ -198,6 +198,31 @@ class NtiNetPlant:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
+    def dhw_mode_trusted(self) -> bool:
+        """Return whether ``dhw_mode`` reflects the appliance.
+
+        A combi reports an empty option list and a constant 0 in the
+        aggregated read.  There the mode is only real when the ``DhwMode``
+        data item was read this poll.
+        """
+        return bool(self.allowed_dhw_modes) or self.dhw_mode_item is not None
+
+    @property
+    def is_combi_dhw(self) -> bool:
+        """Return whether hot water is a plain on/off matter on this plant.
+
+        True for an appliance whose aggregated read advertises no DHW modes
+        (a combi without a cylinder) and that does not hide hot water.
+        """
+        if "bsb" in self.raw or self.allowed_dhw_modes:
+            return False
+        if not self.dhw_mode_changeable:
+            return False
+        if self.features.get("dhwBoilerPresent") is False:
+            return False
+        return self.features.get("dhwHidden") is not True
+
+    @property
     def has_fault(self) -> bool | None:
         """Return whether a fault is active, or None when that is unknown."""
         if self.faults is None:
