@@ -526,3 +526,11 @@ Notes:
   pump speed, were not answered).
 - Menu items answered: `124` CH return temperature (`T_8.3.2`) and `119`
   signal level (`T_19.1.1`). Ids 13, 116, 223, 227 and 228 were not.
+
+- **Combi DHW mode.** On the reference combi (no cylinder) `plantData` answers
+  `dMod = {"allowedOptions": [], "value": 0}` while the `DhwMode` data item
+  answers the real mode with options `[0, 1, 2]` (Disabled, Time Based, Always
+  active). Verified live 2026-11-26: `POST remote/plantData/{gw}/dhwMode` with
+  `{"new": 0, "old": 2}` answered `{"success": true}`, the item read 0 five
+  seconds later while `dMod` still said 0, and `{"new": 2, "old": 0}` restored
+  it.

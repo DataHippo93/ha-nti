@@ -151,11 +151,16 @@ DATA_ITEM_FLOW_SETPOINT: Final = "ChFlowSetpointTemp"
 DATA_ITEM_FLOW_TEMP: Final = "ChFlowTemp"
 DATA_ITEM_PRESSURE: Final = "HeatingCircuitPressure"
 DATA_ITEM_AUTO_THERMOREG: Final = "AutomaticThermoregulation"
+#: The hot water mode as a data item.  On a combi boiler (no cylinder) the
+#: aggregated read reports ``dMod`` as ``{"allowedOptions": [], "value": 0}``
+#: whatever the real mode is, so this item is the only truthful source there.
+DATA_ITEM_DHW_MODE: Final = "DhwMode"
 DIAGNOSTIC_DATA_ITEMS: Final = (
     DATA_ITEM_FLOW_SETPOINT,
     DATA_ITEM_FLOW_TEMP,
     DATA_ITEM_PRESSURE,
     DATA_ITEM_AUTO_THERMOREG,
+    DATA_ITEM_DHW_MODE,
 )
 
 #: Service-menu ids read alongside them.

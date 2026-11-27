@@ -184,6 +184,11 @@
           "holiday": "Holiday"
         }
       }
+    },
+    "switch": {
+      "hot_water": {
+        "name": "Hot water"
+      }
     }
   }
 }

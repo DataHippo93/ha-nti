@@ -251,3 +251,9 @@ The cloud keeps no fault history, so the Fault code sensor's history in Home
 Assistant is the log. These cost three extra requests per poll. If the cloud
 throttles the account they are skipped until the block expires, and the
 heating and hot water entities keep working.
+
+- **Hot water** switch: domestic hot water on (always active) or off. Its
+  state comes from the `DhwMode` data item, because on a combi boiler the
+  aggregated read reports mode 0 whatever the real mode is. The same item now
+  corrects the water heater entity on such boilers. The switch reads `unknown`
+  and refuses to write when the current mode has not been read.

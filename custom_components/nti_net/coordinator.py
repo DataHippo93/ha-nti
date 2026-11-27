@@ -58,6 +58,7 @@ from homeassistant.util import dt as dt_util
 from .api import NtiNetApiClient, NtiNetAuthError, NtiNetError, NtiNetRateLimitError
 from .const import (
     DATA_ITEM_AUTO_THERMOREG,
+    DATA_ITEM_DHW_MODE,
     DATA_ITEM_FLOW_SETPOINT,
     DATA_ITEM_FLOW_TEMP,
     DATA_ITEM_PRESSURE,
@@ -184,6 +185,10 @@ class NtiNetPlant:
     pressure: float | None = None
     signal_level: float | None = None
     auto_thermoreg: bool | None = None
+    #: Hot water mode read from the ``DhwMode`` data item.  ``None`` means it
+    #: was not read this poll, so the hot water switch reports "unknown"
+    #: rather than trusting the aggregated read (see ``DATA_ITEM_DHW_MODE``).
+    dhw_mode_item: int | None = None
     #: Active faults.  ``None`` means "could not be read", which is not the
     #: same as an empty list ("read fine, nothing wrong").
     faults: list[dict[str, Any]] | None = None
@@ -398,6 +403,11 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
         plant.flow_temp = _as_float(values.get(DATA_ITEM_FLOW_TEMP))
         plant.pressure = _as_float(values.get(DATA_ITEM_PRESSURE))
         plant.auto_thermoreg = _as_bool(values.get(DATA_ITEM_AUTO_THERMOREG))
+        plant.dhw_mode_item = _as_int(values.get(DATA_ITEM_DHW_MODE))
+        if plant.dhw_mode_item is not None and not plant.allowed_dhw_modes:
+            # The aggregated read gave no usable mode (a combi reports an
+            # empty option list and a constant 0), so the data item wins.
+            plant.dhw_mode = plant.dhw_mode_item
 
         try:
             menu = await self.client.async_get_menu_items(
