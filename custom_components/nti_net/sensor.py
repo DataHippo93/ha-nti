@@ -34,16 +34,20 @@ from .const import (
     CONF_GAS_KWH_PER_M3,
     CONF_GAS_UNIT,
     DEFAULT_GAS_KWH_PER_M3,
+    FAULT_STATE_GENERIC,
     FAULT_STATE_OK,
     GAS_UNIT_KWH,
     GAS_UNIT_M3,
 )
-from .coordinator import NtiNetCoordinator, NtiNetPlant
+from .coordinator import MAX_FAULTS, NtiNetCoordinator, NtiNetPlant
 from .entity import NtiNetEntity
 
 _LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 0
+
+#: Home Assistant stores a state longer than this as "unknown".
+MAX_STATE_LENGTH = 255
 
 PLANT_SENSORS: tuple[SensorEntityDescription, ...] = (
     SensorEntityDescription(
@@ -259,7 +263,8 @@ class NtiNetSensor(NtiNetEntity, SensorEntity):
 class NtiNetFaultSensor(NtiNetEntity, SensorEntity):
     """The fault the appliance is reporting right now.
 
-    The state is the code of the first active fault, or ``OK``.  It is
+    The state is the code of the first active fault, ``fault`` when the cloud
+    gives no code, or ``OK``.  It is
     ``unknown`` when the fault list could not be read, never ``OK``: a failed
     read must not look like a healthy boiler.  The cloud keeps no history, so
     this sensor's own history in Home Assistant is the fault log.
@@ -280,8 +285,11 @@ class NtiNetFaultSensor(NtiNetEntity, SensorEntity):
             return None
         if not plant.faults:
             return FAULT_STATE_OK
-        first = plant.faults[0]
-        return first.get("code") or first.get("description") or "fault"
+        # A description can be longer than a state may be, and an over-long
+        # state is stored as "unknown", so only the short code is used here.
+        # The description is always available as an attribute.
+        code = plant.faults[0].get("code")
+        return code[:MAX_STATE_LENGTH] if code else FAULT_STATE_GENERIC
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
@@ -294,5 +302,5 @@ class NtiNetFaultSensor(NtiNetEntity, SensorEntity):
             "count": len(plant.faults),
             "description": first.get("description"),
             "blocking": first.get("blocking"),
-            "faults": plant.faults,
+            "faults": plant.faults[:MAX_FAULTS],
         }

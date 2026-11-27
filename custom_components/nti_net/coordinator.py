@@ -81,6 +81,18 @@ _LOGGER = logging.getLogger(__name__)
 #: gateway per poll for data that moves once a day.
 CONSUMPTION_REFRESH_SECONDS: Final = 3600
 
+#: How long to leave the extra reads alone after a 429 that names no delay.
+DIAGNOSTICS_BACKOFF_SECONDS: Final = 300
+
+#: Keys that identify the gateway or its owner.  They are stripped from the
+#: fault payload kept on the sensor, which ends up in the recorder.
+_FAULT_PRIVATE_KEYS: Final = frozenset(
+    {"gw", "gwId", "gatewayId", "gwSerial", "sn", "plantId", "mac", "macAddress"}
+)
+
+#: A fault list longer than this is cut, to keep the attributes small.
+MAX_FAULTS: Final = 10
+
 
 @dataclass
 class NtiNetZone:
@@ -236,6 +248,8 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
         )
         self.client = client
         self._consumption_cache: dict[str, dict[str, float | None]] = {}
+        self._diagnostics_blocked_until: dict[str, float] = {}
+        self._fault_read_failing: set[str] = set()
         self._consumption_fetched_at: dict[str, float] = {}
 
     async def _async_update_data(self) -> dict[str, NtiNetPlant]:
@@ -325,28 +339,47 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
     async def _async_apply_diagnostics(self, plant: NtiNetPlant) -> None:
         """Read the faults and the service readings for one gateway.
 
-        These are three extra requests on top of the main read.  Each is
-        independent and none may fail the poll: a gateway that does not answer
-        one of them still has a perfectly usable climate entity.  Throttling
-        is the exception -- it is re-raised so the whole poll backs off rather
-        than adding more requests to an account that is already blocked.
+        These are three extra requests on top of the main read, and none of
+        them may fail the poll: the climate and hot water entities come from
+        the main read and must stay usable whatever happens here.
 
-        A fault read that fails leaves ``faults`` as ``None`` so the fault
-        sensors report "unknown".  Reporting "ok" there would hide the very
-        thing these sensors exist to catch.
+        Throttling is handled the way the consumption read handles it.  The
+        remaining requests of this poll are skipped, and the diagnostics are
+        left alone until the delay the cloud asked for has passed, so an
+        account that is already blocked is not sent more requests.
+
+        A fault read that fails or is skipped leaves ``faults`` as ``None`` so
+        the fault sensors report "unknown".  Reporting "OK" there would hide
+        the very thing these sensors exist to catch.
         """
         gateway_id = plant.gateway_id
+        blocked = _state(self, "_diagnostics_blocked_until", dict)
+        failing = _state(self, "_fault_read_failing", set)
+
+        if time.monotonic() < blocked.get(gateway_id, 0.0):
+            return
 
         try:
             plant.faults = [
                 _parse_fault(entry)
                 for entry in await self.client.async_get_bus_errors(gateway_id)
             ]
-        except NtiNetRateLimitError:
-            raise
+            failing.discard(gateway_id)
+        except NtiNetRateLimitError as err:
+            self._defer_diagnostics(gateway_id, err)
+            return
         except NtiNetError as err:
-            _LOGGER.debug("No fault data for %s: %s", gateway_id, err)
             plant.faults = None
+            # Say so once, loudly: a fault sensor stuck on "unknown" with only
+            # a debug line behind it is easy to miss.
+            if gateway_id not in failing:
+                failing.add(gateway_id)
+                _LOGGER.warning(
+                    "Cannot read faults for %s, the fault sensors will be "
+                    "unknown until this recovers: %s",
+                    plant.name,
+                    err,
+                )
 
         try:
             items = await self.client.async_get_data_items(
@@ -354,8 +387,9 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
                 [{"id": name, "zn": 0} for name in DIAGNOSTIC_DATA_ITEMS],
                 plant.features,
             )
-        except NtiNetRateLimitError:
-            raise
+        except NtiNetRateLimitError as err:
+            self._defer_diagnostics(gateway_id, err)
+            return
         except NtiNetError as err:
             _LOGGER.debug("No data items for %s: %s", gateway_id, err)
             items = []
@@ -369,14 +403,27 @@ class NtiNetCoordinator(DataUpdateCoordinator[dict[str, NtiNetPlant]]):
             menu = await self.client.async_get_menu_items(
                 gateway_id, DIAGNOSTIC_MENU_ITEMS
             )
-        except NtiNetRateLimitError:
-            raise
+        except NtiNetRateLimitError as err:
+            self._defer_diagnostics(gateway_id, err)
+            return
         except NtiNetError as err:
             _LOGGER.debug("No menu items for %s: %s", gateway_id, err)
             menu = []
         menu_values = _item_values(menu, "id")
         plant.return_temp = _as_float(menu_values.get(MENU_ITEM_RETURN_TEMP))
         plant.signal_level = _as_float(menu_values.get(MENU_ITEM_SIGNAL_LEVEL))
+
+    def _defer_diagnostics(
+        self, gateway_id: str, err: NtiNetRateLimitError
+    ) -> None:
+        """Hold the extra reads off until the cloud's block has expired."""
+        delay = err.retry_after or DIAGNOSTICS_BACKOFF_SECONDS
+        _state(self, "_diagnostics_blocked_until", dict)[gateway_id] = (
+            time.monotonic() + delay
+        )
+        _LOGGER.debug(
+            "Diagnostics for %s deferred, throttled for %ss", gateway_id, delay
+        )
 
     async def _async_apply_consumption(self, plant: NtiNetPlant) -> None:
         """Fill in the metered gas readings, if this gateway meters.
@@ -576,19 +623,35 @@ def _item_values(items: list[dict[str, Any]], key: str) -> dict[Any, Any]:
     return result
 
 
+def _state(coordinator: Any, name: str, factory: Any) -> Any:
+    """Return a per-coordinator bookkeeping container, creating it on demand.
+
+    The parser tests build a coordinator without running ``__init__``, so the
+    containers cannot be assumed to exist.
+    """
+    value = getattr(coordinator, name, None)
+    if value is None:
+        value = factory()
+        setattr(coordinator, name, value)
+    return value
+
+
 def _parse_fault(entry: dict[str, Any]) -> dict[str, Any]:
     """Normalise one ``busErrors`` entry.
 
     The route was only ever observed empty on the reference gateway, so the
     field names are taken from the shared Ariston/remotethermo payload
     (``code``, ``fault``, ``errDex``, ``blk``, ``res``, ``timestamp``) and read
-    defensively.  The untouched entry is kept under ``raw`` so that a field
-    this guess misses is still visible on the sensor the first time a real
-    fault arrives.
+    defensively.  The entry is also kept under ``raw``, minus the keys that
+    identify the gateway, so that a field this guess misses is still visible
+    on the sensor the first time a real fault arrives.
     """
     code = entry.get("code")
     if code in (None, ""):
         code = entry.get("fault")
+    if code in (None, "") and isinstance(entry.get("value"), (str, int)):
+        # An entry that was not an object at all: the value is all there is.
+        code = entry.get("value")
     description = (
         entry.get("errDex")
         or entry.get("description")
@@ -601,7 +664,11 @@ def _parse_fault(entry: dict[str, Any]) -> dict[str, Any]:
         "blocking": _as_bool(entry.get("blk")),
         "reset": _as_str(entry.get("res")),
         "timestamp": _as_str(entry.get("timestamp")),
-        "raw": entry,
+        "raw": {
+            key: value
+            for key, value in entry.items()
+            if key not in _FAULT_PRIVATE_KEYS
+        },
     }
 
 

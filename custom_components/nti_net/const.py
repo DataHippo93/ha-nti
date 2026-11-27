@@ -165,3 +165,6 @@ DIAGNOSTIC_MENU_ITEMS: Final = (MENU_ITEM_RETURN_TEMP, MENU_ITEM_SIGNAL_LEVEL)
 
 #: State of the fault sensor while the appliance reports nothing wrong.
 FAULT_STATE_OK: Final = "OK"
+
+#: State of the fault sensor for a fault the cloud reports without a code.
+FAULT_STATE_GENERIC: Final = "fault"

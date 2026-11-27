@@ -238,13 +238,16 @@ MIT — see [LICENSE](LICENSE).
 
 This fork adds read-only fault and service entities per gateway:
 
-- **Fault code** sensor: the active fault code, or `OK`. Attributes carry the
-  description, whether it is a lockout, and the raw cloud entry. It reads
-  `unknown`, never `OK`, when the fault list cannot be fetched.
+- **Fault code** sensor: the active fault code, `fault` if the cloud gives no
+  code, or `OK`. Attributes carry the description, whether it is a lockout,
+  and the cloud entry. It reads `unknown`, never `OK`, when the fault list
+  cannot be fetched or does not look like a fault list.
 - **Fault** binary sensor (problem class), for alerts.
 - **Flow temperature**, **Flow setpoint**, **Return temperature**,
   **Heating circuit pressure** and **Gateway signal level** sensors.
 - **Automatic thermoregulation** binary sensor.
 
 The cloud keeps no fault history, so the Fault code sensor's history in Home
-Assistant is the log. These cost three extra requests per poll.
+Assistant is the log. These cost three extra requests per poll. If the cloud
+throttles the account they are skipped until the block expires, and the
+heating and hot water entities keep working.

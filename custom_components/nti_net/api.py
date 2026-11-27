@@ -328,6 +328,8 @@ class NtiNetApiClient:
         firmware ``104.115.28B``); the list is empty while nothing is wrong.
         The cloud keeps no history on this route, so a fault is only visible
         while it is active and has to be caught by polling.
+
+        Raises `NtiNetError` for anything that is not a JSON list.
         """
         data = await self._raw_request(
             "GET",
@@ -338,7 +340,21 @@ class NtiNetApiClient:
                 "culture": "en-US",
             },
         )
-        return _as_list(data)
+        # Only a JSON list is a real answer.  ``_raw_request`` returns None
+        # for a 404, an empty body or a non-JSON page, and a dict is some
+        # other message entirely.  Coercing any of those to "no faults" would
+        # make a broken read look like a healthy boiler, so they are errors.
+        if not isinstance(data, list):
+            raise NtiNetError(
+                f"Unexpected busErrors answer of type {type(data).__name__}"
+            )
+        # Keep entries that are not objects instead of dropping them: the
+        # entry shape has not been seen live, and a dropped entry is a hidden
+        # fault.
+        return [
+            entry if isinstance(entry, dict) else {"value": entry}
+            for entry in data
+        ]
 
     async def async_get_data_items(
         self,
